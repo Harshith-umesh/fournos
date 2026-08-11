@@ -1,0 +1,13 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: fournos-dashboard-cert
+  labels:
+    app.kubernetes.io/name: fournos-dashboard
+spec:
+  secretName: fournos-dashboard-letsencrypt-tls
+  issuerRef:
+    name: letsencrypt-production
+    kind: ClusterIssuer
+  dnsNames:
+    - fournos-dashboard-fournos-dashboard.apps.CLUSTER_DOMAIN
