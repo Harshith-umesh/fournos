@@ -35,3 +35,5 @@ kustomize/overlays/*/projects.yaml
 kustomize/overlays/*/kustomization.yaml
 kustomize/overlays/*/oauth-cookie-secret.yaml
 kustomize/overlays/*/rolebinding-*.yaml
+projects-local.yaml
+cpt.yaml

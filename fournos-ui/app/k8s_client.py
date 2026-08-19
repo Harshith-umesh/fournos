@@ -355,11 +355,22 @@ def list_pods_for_job(job_name: str, namespace: str | None = None) -> list[dict]
 
             container_ready = False
             restarts = 0
+            exit_code = None
+            term_reason = ""
+            term_message = ""
             if pod.status.container_statuses:
                 for cs in pod.status.container_statuses:
                     if cs.ready:
                         container_ready = True
                     restarts += cs.restart_count
+                    terminated = (
+                        cs.state.terminated if cs.state and cs.state.terminated
+                        else (cs.last_state.terminated if cs.last_state and cs.last_state.terminated else None)
+                    )
+                    if terminated:
+                        exit_code = terminated.exit_code
+                        term_reason = terminated.reason or ""
+                        term_message = terminated.message or ""
 
             if pod.metadata.name.startswith("affinity-assistant"):
                 continue
@@ -373,6 +384,9 @@ def list_pods_for_job(job_name: str, namespace: str | None = None) -> list[dict]
                 "ready": container_ready,
                 "restarts": restarts,
                 "age_minutes": age_minutes,
+                "exit_code": exit_code,
+                "term_reason": term_reason,
+                "term_message": term_message,
                 "_created": created,
             })
         pods.sort(key=lambda p: p["_created"] or datetime.min.replace(tzinfo=timezone.utc))

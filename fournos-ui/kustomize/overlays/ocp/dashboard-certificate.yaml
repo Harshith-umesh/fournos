@@ -10,4 +10,4 @@ spec:
     name: letsencrypt-production
     kind: ClusterIssuer
   dnsNames:
-    - fournos-dashboard-fournos-dashboard.apps.CLUSTER_DOMAIN
+    - fournos-dashboard.apps.CLUSTER_DOMAIN

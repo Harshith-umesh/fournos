@@ -22,6 +22,9 @@
 {% if phase in ('Succeeded', 'Failed', 'Stopped') %}
 <div class="status-banner {% if phase == 'Succeeded' %}banner-success{% elif phase == 'Failed' %}banner-error{% else %}banner-stopped{% endif %}">
     {% if phase == 'Succeeded' %}Execution succeeded{% elif phase == 'Failed' %}Execution failed{% else %}Execution stopped{% endif %}
+    {% if phase == 'Failed' and job.status.message %}
+    <div style="margin-top:8px;font-size:13px;font-weight:400;opacity:0.9;">{{ job.status.message }}</div>
+    {% endif %}
 </div>
 {% endif %}
 </div>
@@ -123,7 +126,8 @@
                 <tr>
                     <th>Name</th>
                     <th>Status</th>
-                    <th>Ready</th>
+                    <th>Reason</th>
+                    <th>Exit Code</th>
                     <th>Restarts</th>
                     <th>Age</th>
                     <th>Logs</th>
@@ -139,16 +143,28 @@
                             {{ pod.phase }}
                         </span>
                     </td>
-                    <td>{{ "Yes" if pod.ready else "No" }}</td>
+                    <td>
+                        {% if pod.term_reason %}
+                        <span class="phase-badge {% if pod.term_reason == 'OOMKilled' %}badge-failed{% elif pod.term_reason == 'Completed' %}badge-succeeded{% else %}badge-failed{% endif %}"
+                              {% if pod.term_message %}title="{{ pod.term_message }}"{% endif %}>
+                            {{ pod.term_reason }}
+                        </span>
+                        {% else %}
+                        <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if pod.exit_code is not none %}
+                        <code{% if pod.exit_code != 0 %} style="color: var(--accent-red);"{% endif %}>{{ pod.exit_code }}</code>
+                        {% else %}
+                        <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
                     <td>{{ pod.restarts }}</td>
                     <td>{{ pod.age_minutes }}m</td>
                     <td>
-                        {% if phase in ("Running", "Pending", "Admitted") %}
                         <a href="#" onclick="loadLogs('{{ pod.name }}', 'live'); return false;"
                            style="font-size: 12px;">View logs</a>
-                        {% else %}
-                        <span class="text-muted" style="font-size: 12px;">-</span>
-                        {% endif %}
                     </td>
                 </tr>
                 {% endfor %}
