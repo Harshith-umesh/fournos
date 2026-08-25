@@ -6,10 +6,11 @@ import asyncio
 import logging
 import re
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +18,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from app import db, k8s_client, watcher
 from app.config import settings
-from app.forge_discovery import discover_projects
+from app.forge_discovery import discover_projects, get_project_presets
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +26,12 @@ logger = logging.getLogger(__name__)
 # Lifespan
 # ---------------------------------------------------------------------------
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logging.basicConfig(level=getattr(logging, settings.log_level))
     await db.init_db()
     watcher.start_watcher()
     yield
-
 
 app = FastAPI(title="Fournos Launcher Dashboard", lifespan=lifespan)
 
@@ -49,7 +48,6 @@ _jinja_env = Environment(
 # Template helpers
 # ---------------------------------------------------------------------------
 
-
 def _format_age(timestamp_str: str) -> str:
     from dateutil.parser import parse
 
@@ -57,7 +55,7 @@ def _format_age(timestamp_str: str) -> str:
         created = parse(timestamp_str)
     except Exception:
         return "?"
-    delta = datetime.now(UTC) - created
+    delta = datetime.now(timezone.utc) - created
     total_seconds = int(delta.total_seconds())
     if total_seconds < 0:
         return "0s"
@@ -100,11 +98,7 @@ def _extract_forge_info(job: dict) -> dict:
     pr_title = env.get("PULL_TITLE", "")
     repo_owner = env.get("REPO_OWNER", "")
     repo_name = env.get("REPO_NAME", "")
-    pr_url = (
-        f"https://github.com/{repo_owner}/{repo_name}/pull/{pr_number}"
-        if pr_number
-        else ""
-    )
+    pr_url = f"https://github.com/{repo_owner}/{repo_name}/pull/{pr_number}" if pr_number else ""
     return {
         "project": forge.get("project", ""),
         "args": forge.get("args", []),
@@ -135,7 +129,7 @@ def _parse_task_progress(message: str) -> dict | None:
 def _build_timeline(stages: list[dict]) -> list[dict]:
     from dateutil.parser import parse
 
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     n = len(stages) or 1
     equal_pct = 100.0 / n
 
@@ -167,15 +161,13 @@ def _build_timeline(stages: list[dict]) -> list[dict]:
             "Skipped": "ptl-skip",
         }.get(s["status"], "ptl-wait")
 
-        result.append(
-            {
-                **s,
-                "width_pct": equal_pct,
-                "min_width": 8,
-                "duration_label": dur_label if s["startTime"] else "",
-                "status_class": status_class,
-            }
-        )
+        result.append({
+            **s,
+            "width_pct": equal_pct,
+            "min_width": 8,
+            "duration_label": dur_label if s["startTime"] else "",
+            "status_class": status_class,
+        })
     return result
 
 
@@ -192,7 +184,7 @@ def _extract_mlflow_url(status: dict) -> str:
     return mlflow.get("run_url", "") if mlflow else ""
 
 
-_CACHE_BUST = str(int(datetime.now(UTC).timestamp()))
+_CACHE_BUST = str(int(datetime.now(timezone.utc).timestamp()))
 
 _jinja_env.globals.update(
     format_age=_format_age,
@@ -235,7 +227,7 @@ def _get_live_jobs_sync() -> list[dict]:
     from dateutil.parser import parse
 
     jobs = k8s_client.list_fournos_jobs()
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     visible: list[dict] = []
     for j in jobs:
         phase = j.get("status", {}).get("phase", "")
@@ -313,7 +305,6 @@ async def _get_pipeline_stages(job: dict) -> list[dict]:
 # Routes: Jobs
 # ---------------------------------------------------------------------------
 
-
 @app.get("/", response_class=HTMLResponse)
 async def jobs_list(
     request: Request,
@@ -340,7 +331,7 @@ async def jobs_list(
         total = len(jobs)
         all_clusters = _collect_clusters(jobs)
         offset = (page - 1) * per_page
-        jobs = jobs[offset : offset + per_page]
+        jobs = jobs[offset:offset + per_page]
         history_jobs = []
         total_history = 0
     else:
@@ -396,9 +387,7 @@ async def jobs_table_partial(
     if owner:
         jobs = [j for j in jobs if j.get("spec", {}).get("owner") == owner]
     current_steps = await _compute_current_steps(jobs)
-    return _render(
-        "components/jobs_table_body.html", jobs=jobs, current_steps=current_steps
-    )
+    return _render("components/jobs_table_body.html", jobs=jobs, current_steps=current_steps)
 
 
 @app.get("/jobs/{job_name}", response_class=HTMLResponse)
@@ -483,11 +472,7 @@ async def rerun_job(job_name: str):
     try:
         created = await asyncio.to_thread(k8s_client.create_fournos_job, body)
         created_name = created.get("metadata", {}).get("name", new_name)
-        return {
-            "status": "ok",
-            "job_name": created_name,
-            "redirect": f"/jobs/{created_name}",
-        }
+        return {"status": "ok", "job_name": created_name, "redirect": f"/jobs/{created_name}"}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -507,8 +492,9 @@ async def _get_job_for_rerun(job_name: str) -> dict | None:
 @app.delete("/api/history/{job_name}")
 async def delete_history_job(job_name: str):
     """Delete a job from the history database."""
-    async with db.async_session() as session, session.begin():
-        deleted = await db.delete_job_by_name(session, job_name)
+    async with db.async_session() as session:
+        async with session.begin():
+            deleted = await db.delete_job_by_name(session, job_name)
     if not deleted:
         raise HTTPException(status_code=404, detail="Job not found in history")
     return {"status": "ok"}
@@ -516,11 +502,14 @@ async def delete_history_job(job_name: str):
 
 @app.get("/api/jobs/{job_name}/logs/{pod_name}")
 async def stream_logs(job_name: str, pod_name: str):
-    """Stream live pod logs via SSE (only for running jobs)."""
+    """Stream or fetch pod logs via SSE."""
     job_pods = await asyncio.to_thread(k8s_client.list_pods_for_job, job_name)
-    pod_names = {p["name"] for p in job_pods}
-    if pod_name not in pod_names:
+    pod_map = {p["name"]: p for p in job_pods}
+    if pod_name not in pod_map:
         raise HTTPException(status_code=404, detail="Pod not found for this job")
+
+    pod = pod_map[pod_name]
+    is_running = pod.get("phase") in ("Running", "Pending")
 
     async def generate():
         stop = asyncio.Event()
@@ -529,7 +518,7 @@ async def stream_logs(job_name: str, pod_name: str):
 
         def _reader():
             try:
-                for line in k8s_client.read_pod_log(pod_name, follow=True):
+                for line in k8s_client.read_pod_log(pod_name, follow=is_running):
                     if stop.is_set():
                         break
                     try:
@@ -539,7 +528,7 @@ async def stream_logs(job_name: str, pod_name: str):
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)
 
-        asyncio.get_event_loop().run_in_executor(None, _reader)
+        task = asyncio.get_event_loop().run_in_executor(None, _reader)
         try:
             while True:
                 line = await queue.get()
@@ -552,10 +541,11 @@ async def stream_logs(job_name: str, pod_name: str):
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
+
+
 # ---------------------------------------------------------------------------
 # Routes: Submit Job
 # ---------------------------------------------------------------------------
-
 
 @app.get("/submit", response_class=HTMLResponse)
 async def submit_form(request: Request):
@@ -564,13 +554,13 @@ async def submit_form(request: Request):
         "submit_job.html",
         projects=projects,
         pipelines=list(settings.default_pipelines),
+        fournos_namespace=settings.fournos_namespace,
     )
 
 
 @app.get("/api/project-info/{project_name}")
 async def project_info_api(project_name: str):
     from app.forge_discovery import get_project
-
     proj = get_project(project_name)
     if proj is None:
         return {"presets": [], "cluster": ""}
@@ -579,8 +569,8 @@ async def project_info_api(project_name: str):
 
 def _fetch_github_open_prs() -> list[dict]:
     """Blocking call to the GitHub API -- run via asyncio.to_thread."""
-    import json as _json
     import urllib.request
+    import json as _json
 
     url = f"https://api.github.com/repos/{settings.forge_github_repo}/pulls?state=open&per_page=100"
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
@@ -609,6 +599,353 @@ async def github_open_prs():
         raise HTTPException(status_code=502, detail=f"GitHub API error: {exc}")
 
 
+_RHAIIS_ORCHESTRATION = "projects/rhaiis/orchestration"
+
+
+def _github_fetch_yaml(path: str) -> dict:
+    """Fetch a single YAML file from the forge GitHub repo and return parsed content."""
+    import urllib.request
+    import json as _json
+
+    url = f"https://api.github.com/repos/{settings.forge_github_repo}/contents/{path}"
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        meta = _json.loads(resp.read())
+
+    download_url = meta.get("download_url", "")
+    if not download_url:
+        return {}
+
+    raw_req = urllib.request.Request(download_url)
+    with urllib.request.urlopen(raw_req, timeout=15) as resp:
+        return yaml.safe_load(resp.read()) or {}
+
+
+def _github_list_yamls(directory: str) -> list[str]:
+    """List .yaml file paths in a forge GitHub repo directory."""
+    import urllib.request
+    import json as _json
+
+    url = f"https://api.github.com/repos/{settings.forge_github_repo}/contents/{directory}"
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        items = _json.loads(resp.read())
+
+    return sorted(
+        item["path"] for item in items
+        if isinstance(item, dict) and item.get("name", "").endswith(".yaml")
+    )
+
+
+_CATEGORY_KEYS = {
+    "rhaiis.accelerator": "accelerator",
+    "rhaiis.engine": "engine",
+    "rhaiis.cluster_tag": "cluster",
+    "tests.rhaiis.run_benchmark": "benchmark",
+    "tests.rhaiis.model_key": "model",
+    "tests.rhaiis.workload_key": "workload",
+}
+
+_CATEGORY_PLURAL = {
+    "accelerator": "accelerators",
+    "engine": "engines",
+    "cluster": "clusters",
+    "benchmark": "benchmarks",
+    "model": "models",
+    "workload": "workloads",
+}
+
+
+def _parse_cpt_models(raw_models) -> list[dict]:
+    """Normalize __models from a CPT definition into [{name, preset, overrides, tp}, ...].
+
+    Keys may contain a ``/suffix`` to allow the same preset multiple times
+    with different settings (e.g. ``llama-70b/tp2``).  The part before ``/``
+    is the Forge preset name; the full key is used as the display label.
+    """
+    if isinstance(raw_models, dict):
+        result = []
+        for m, ov in raw_models.items():
+            parts = m.split("/", 1)
+            preset = parts[0]
+            suffix = parts[1] if len(parts) > 1 else ""
+            entry: dict[str, Any] = {"name": m, "preset": preset, "overrides": {}}
+            tp = None
+            if isinstance(ov, dict):
+                tp = ov.pop("__tp", None)
+                entry["overrides"] = ov
+            if tp is None and suffix.startswith("tp") and suffix[2:].isdigit():
+                tp = int(suffix[2:])
+            entry["tp"] = tp
+            result.append(entry)
+        return result
+    return [{"name": m, "preset": m, "overrides": {}} for m in raw_models]
+
+
+def _fetch_rhaiis_config_from_github() -> dict:
+    """Fetch and categorize rhaiis presets from the forge GitHub repo."""
+    config_dir = f"{_RHAIIS_ORCHESTRATION}/config.d"
+    presets_dir = f"{_RHAIIS_ORCHESTRATION}/presets.d"
+
+    categories: dict[str, list[dict]] = {
+        "quick_presets": [],
+        "accelerators": [],
+        "engines": [],
+        "clusters": [],
+        "models": [],
+        "workloads": [],
+        "benchmarks": [],
+    }
+
+    model_display_names: dict[str, str] = {}
+    model_tp_sizes: dict[str, int] = {}
+    try:
+        models_data = _github_fetch_yaml(f"{config_dir}/models.yaml")
+        for key, val in models_data.items():
+            if isinstance(val, dict):
+                model_display_names[key] = val.get("name", key)
+                tp = (
+                    val.get("vllm_args", {}).get("tensor-parallel-size")
+                    or val.get("sglang_args", {}).get("tp-size")
+                    or val.get("tensor_parallel")
+                    or val.get("tp_size")
+                    or val.get("tp")
+                )
+                if tp is not None:
+                    try:
+                        model_tp_sizes[key] = int(tp)
+                    except (ValueError, TypeError):
+                        pass
+    except Exception as exc:
+        logger.warning("Failed to fetch models.yaml from GitHub: %s", exc)
+
+    cluster_gpu_types: dict[str, str] = {"hera": "h200", "zeus": "h200"}
+    try:
+        clusters_data = _github_fetch_yaml(f"{config_dir}/clusters.yaml")
+        for key, val in clusters_data.items():
+            if isinstance(val, dict):
+                gpu = val.get("gpu_type", val.get("gpuType", val.get("gpu")))
+                if gpu:
+                    cluster_gpu_types[key] = str(gpu)
+    except Exception as exc:
+        logger.debug("No clusters.yaml in config.d, using defaults: %s", exc)
+
+    engine_images: dict[str, dict[str, str]] = {}
+    try:
+        rhaiis_data = _github_fetch_yaml(f"{config_dir}/rhaiis.yaml")
+        for ename, edata in (rhaiis_data.get("engines") or {}).items():
+            if isinstance(edata, dict):
+                for accel, img in (edata.get("images") or {}).items():
+                    if isinstance(img, str):
+                        engine_images.setdefault(ename, {})[accel] = img
+    except Exception as exc:
+        logger.debug("Failed to fetch rhaiis.yaml for engine defaults: %s", exc)
+
+    workload_profiles: dict[str, dict] = {}
+    try:
+        workloads_data = _github_fetch_yaml(f"{config_dir}/workloads.yaml")
+        for wk, wv in workloads_data.items():
+            if isinstance(wv, dict):
+                workload_profiles[wk] = wv
+    except Exception as exc:
+        logger.debug("Failed to fetch workloads.yaml: %s", exc)
+
+    model_key_to_preset: dict[str, str] = {}
+    workload_key_to_preset: dict[str, str] = {}
+    cpt_pipelines: list[dict] = []
+
+    try:
+        preset_files = _github_list_yamls(presets_dir)
+    except Exception as exc:
+        logger.error("Failed to list presets.d from GitHub: %s", exc)
+        preset_files = []
+
+    # First pass: categorize simple presets and detect compound ones
+    compound_presets: list[tuple[str, dict]] = []
+
+    for file_path in preset_files:
+        try:
+            data = _github_fetch_yaml(file_path)
+        except Exception as exc:
+            logger.warning("Failed to fetch %s: %s", file_path, exc)
+            continue
+
+        if data.get("__cpt"):
+            for key, entry in data.items():
+                if key.startswith("__") or not isinstance(entry, dict):
+                    continue
+                raw_models = entry.get("__models", [])
+                models_list = _parse_cpt_models(raw_models)
+                cpt_pipelines.append({
+                    "key": key,
+                    "description": entry.get("__description", ""),
+                    "engine": entry.get("__engine", ""),
+                    "accelerator": entry.get("__accelerator", ""),
+                    "models": models_list,
+                    "workloads": entry.get("__workloads", []),
+                    "overrides": {
+                        k: v for k, v in entry.items()
+                        if not k.startswith("__")
+                    },
+                })
+            continue
+
+        for key, overrides in data.items():
+            if key.startswith("__"):
+                continue
+            if not isinstance(overrides, dict):
+                continue
+
+            matched_cats = [
+                cat for cat_key, cat in _CATEGORY_KEYS.items()
+                if cat_key in overrides
+            ]
+
+            if len(matched_cats) >= 2:
+                compound_presets.append((key, overrides))
+                continue
+
+            if "rhaiis.accelerator" in overrides:
+                categories["accelerators"].append({"key": key, "label": key.upper(), "overrides": dict(overrides)})
+            elif "rhaiis.engine" in overrides:
+                categories["engines"].append({"key": key, "label": key, "overrides": dict(overrides)})
+            elif "rhaiis.cluster_tag" in overrides:
+                cluster_tag = overrides["rhaiis.cluster_tag"]
+                entry = {"key": key, "label": key.capitalize(), "overrides": dict(overrides)}
+                gpu = cluster_gpu_types.get(cluster_tag, cluster_gpu_types.get(key))
+                if gpu:
+                    entry["gpu_type"] = gpu
+                categories["clusters"].append(entry)
+            elif "tests.rhaiis.run_benchmark" in overrides:
+                categories["benchmarks"].append({"key": key, "label": key.capitalize(), "overrides": dict(overrides)})
+            elif "tests.rhaiis.model_key" in overrides:
+                model_key = overrides["tests.rhaiis.model_key"]
+                display = model_display_names.get(model_key, key)
+                entry = {"key": key, "label": display, "overrides": dict(overrides)}
+                tp = model_tp_sizes.get(model_key)
+                if tp:
+                    entry["gpu_count"] = tp
+                categories["models"].append(entry)
+                model_key_to_preset[model_key] = key
+            elif "tests.rhaiis.workload_key" in overrides:
+                wk = overrides["tests.rhaiis.workload_key"]
+                entry: dict[str, Any] = {"key": key, "label": key, "overrides": dict(overrides)}
+                profile = workload_profiles.get(wk)
+                if profile:
+                    entry["profile"] = profile
+                categories["workloads"].append(entry)
+                workload_key_to_preset[wk] = key
+
+    _SETTINGS_KEYS = {
+        "tests.rhaiis.warmup": "warmup",
+        "rhaiis.profiler.enabled": "profiler",
+        "tests.rhaiis.slack_notify_always": "slack",
+        "rhaiis.agent_analysis.enabled": "agent_analysis",
+        "caliper.postprocess.csv_dashboard.enabled": "csv_dashboard",
+        "rhaiis.compare_versions.enabled": "compare_versions",
+        "tests.rhaiis.run_benchmark": "benchmark",
+    }
+
+    # Second pass: build quick presets with fill mappings
+    for key, overrides in compound_presets:
+        fills: dict[str, Any] = {}
+        if "tests.rhaiis.model_key" in overrides:
+            mk = overrides["tests.rhaiis.model_key"]
+            fills["model"] = model_key_to_preset.get(mk, "")
+        if "tests.rhaiis.workload_key" in overrides:
+            wk = overrides["tests.rhaiis.workload_key"]
+            fills["workload"] = workload_key_to_preset.get(wk, "")
+        if "tests.rhaiis.version" in overrides:
+            fills["version"] = overrides["tests.rhaiis.version"]
+        for cfg_key, fill_key in _SETTINGS_KEYS.items():
+            if cfg_key in overrides:
+                fills[fill_key] = bool(overrides[cfg_key])
+
+        categories["quick_presets"].append({
+            "key": key,
+            "label": key.replace("-", " ").replace("_", " ").title(),
+            "fills": fills,
+            "overrides": dict(overrides),
+        })
+
+    engine_defaults: dict[str, str] = {}
+    for ename, accel_versions in engine_images.items():
+        for accel, ver in accel_versions.items():
+            engine_defaults[f"{accel}_{ename}"] = ver
+
+    accel_keys = {e["key"] for e in categories["accelerators"]}
+    engine_keys = {e["key"] for e in categories["engines"]}
+    invalid_combos = [
+        {"accelerator": a, "engine": e}
+        for a in accel_keys for e in engine_keys
+        if f"{a}_{e}" not in engine_defaults
+    ]
+
+    categories["engine_defaults"] = engine_defaults
+    categories["invalid_combos"] = invalid_combos
+    categories["workload_profiles"] = workload_profiles
+
+    if not cpt_pipelines:
+        local_dir = Path(__file__).resolve().parent.parent
+        for local_cpt in sorted(local_dir.glob("cpt*.yaml")):
+            try:
+                with open(local_cpt) as f:
+                    cpt_data = yaml.safe_load(f) or {}
+                if not cpt_data.get("__cpt"):
+                    continue
+                for key, entry in cpt_data.items():
+                    if key.startswith("__") or not isinstance(entry, dict):
+                        continue
+                    raw_models = entry.get("__models", [])
+                    models_list = _parse_cpt_models(raw_models)
+                    cpt_pipelines.append({
+                        "key": key,
+                        "description": entry.get("__description", ""),
+                        "engine": entry.get("__engine", ""),
+                        "accelerator": entry.get("__accelerator", ""),
+                        "models": models_list,
+                        "workloads": entry.get("__workloads", []),
+                        "overrides": {k: v for k, v in entry.items() if not k.startswith("__")},
+                    })
+                logger.info("Loaded CPT pipeline(s) from local %s", local_cpt)
+            except Exception as exc:
+                logger.debug("Failed to load local CPT file %s: %s", local_cpt, exc)
+
+    categories["cpt_pipelines"] = cpt_pipelines
+
+    return categories
+
+
+_rhaiis_config_cache: dict | None = None
+
+
+@app.get("/api/rhaiis-config")
+async def rhaiis_config():
+    """Return categorized rhaiis preset options for the submit form."""
+    global _rhaiis_config_cache
+    if _rhaiis_config_cache is None:
+        result = await asyncio.to_thread(_fetch_rhaiis_config_from_github)
+        if result.get("accelerators") and result.get("engines"):
+            _rhaiis_config_cache = result
+        else:
+            logger.warning("rhaiis config fetch returned incomplete data — not caching")
+            return result
+    return _rhaiis_config_cache
+
+
+@app.post("/api/rhaiis-config/refresh")
+async def rhaiis_config_refresh():
+    """Force-refresh the cached rhaiis config from GitHub."""
+    global _rhaiis_config_cache
+    _rhaiis_config_cache = None
+    result = await asyncio.to_thread(_fetch_rhaiis_config_from_github)
+    if result.get("accelerators") and result.get("engines"):
+        _rhaiis_config_cache = result
+    return {"status": "ok", "accelerators": len(result.get("accelerators", [])),
+            "engines": len(result.get("engines", [])),
+            "models": len(result.get("models", []))}
+
+
 @app.post("/submit")
 async def submit_job(
     request: Request,
@@ -621,6 +958,12 @@ async def submit_job(
     exclusive: str = Form("false"),
     config_overrides_raw: str = Form(""),
     pull_sha: str = Form(""),
+    rhaiis_args: str = Form(""),
+    rhaiis_version: str = Form(""),
+    rhaiis_overrides: str = Form(""),
+    priority: str = Form("manual"),
+    gpu_type: str = Form(""),
+    gpu_count: str = Form("1"),
 ):
     exclusive_bool = exclusive.lower() in ("true", "on", "1", "yes")
 
@@ -636,36 +979,65 @@ async def submit_job(
         version_key = _get_version_config_key(project)
         config_overrides[version_key] = version
 
-    args = [preset] if preset else []
+    display_name = f"{project} {preset}".strip()
 
-    job_name = sanitize_job_name(f"forge-{project}")
+    if project == "rhaiis" and rhaiis_args.strip():
+        args = [a.strip() for a in rhaiis_args.split(",") if a.strip()]
+        display_name = f"rhaiis-{cluster}-{'-'.join(args[:2])}" if args else f"rhaiis-{cluster}"
+        if rhaiis_version.strip():
+            config_overrides["tests.rhaiis.version"] = rhaiis_version.strip()
+        if rhaiis_overrides.strip():
+            import json as _json
+            try:
+                rh_ov = _json.loads(rhaiis_overrides)
+                if isinstance(rh_ov, dict):
+                    config_overrides.update(rh_ov)
+            except (ValueError, TypeError):
+                pass
+    else:
+        args = [preset] if preset else []
+
+    generate_name = f"rhaiis-{cluster}-" if project == "rhaiis" else f"forge-{project}-"
 
     pull_sha = pull_sha.strip()
     env: dict[str, str] = {}
     if pull_sha:
         env["PULL_PULL_SHA"] = pull_sha
 
+    spec: dict[str, Any] = {
+        "cluster": cluster,
+        "displayName": display_name,
+        "owner": owner or "fournos-dashboard",
+        "pipeline": pipeline,
+        "exclusive": exclusive_bool,
+        "priority": priority,
+        "executionEngine": {
+            "forge": {
+                "project": project,
+                "args": args,
+                "configOverrides": config_overrides,
+            }
+        },
+    }
+
+    try:
+        gpu_count_int = int(gpu_count) if gpu_count.strip() else 1
+    except ValueError:
+        gpu_count_int = 1
+    if gpu_type.strip():
+        spec["hardware"] = {"gpuType": gpu_type.strip(), "gpuCount": gpu_count_int}
+
+    if project == "rhaiis":
+        spec["secretRefs"] = ["psap-forge-dashboard-s3", "psap-forge-notifications"]
+
     body = {
         "apiVersion": f"{settings.fournos_api_group}/{settings.fournos_api_version}",
         "kind": "FournosJob",
         "metadata": {
-            "name": job_name,
+            "generateName": generate_name,
             "namespace": settings.fournos_namespace,
         },
-        "spec": {
-            "cluster": cluster,
-            "displayName": f"{project} {preset}".strip(),
-            "owner": owner or "fournos-dashboard",
-            "pipeline": pipeline,
-            "exclusive": exclusive_bool,
-            "executionEngine": {
-                "forge": {
-                    "project": project,
-                    "args": args,
-                    "configOverrides": config_overrides,
-                }
-            },
-        },
+        "spec": spec,
     }
 
     if env:
@@ -679,39 +1051,157 @@ async def submit_job(
             "submit_job.html",
             projects=projects,
             pipelines=list(settings.default_pipelines),
+            fournos_namespace=settings.fournos_namespace,
             error=str(exc),
         )
 
-    created_name = created.get("metadata", {}).get("name", job_name)
+    created_name = created.get("metadata", {}).get("name", generate_name)
 
     try:
-        async with db.async_session() as session, session.begin():
-            await db.upsert_job(
-                session,
-                name=created_name,
-                project=project,
-                preset=preset,
-                cluster=cluster,
-                pipeline=pipeline,
-                owner=owner or "fournos-dashboard",
-                status="Pending",
-                config_overrides=config_overrides,
-                fjob_spec=body.get("spec", {}),
-            )
+        async with db.async_session() as session:
+            async with session.begin():
+                await db.upsert_job(
+                    session,
+                    name=created_name,
+                    project=project,
+                    preset=preset,
+                    cluster=cluster,
+                    pipeline=pipeline,
+                    owner=owner or "fournos-dashboard",
+                    status="Pending",
+                    config_overrides=config_overrides,
+                    fjob_spec=body.get("spec", {}),
+                )
     except Exception as exc:
-        logger.error(
-            "DB upsert failed for job %s (job was created in K8s): %s",
-            created_name,
-            exc,
-        )
+        logger.error("DB upsert failed for job %s (job was created in K8s): %s", created_name, exc)
 
     return RedirectResponse(url=f"/jobs/{created_name}", status_code=303)
+
+
+@app.post("/api/submit-cpt")
+async def submit_cpt(request: Request):
+    """Submit a CPT pipeline — creates one FournosJob per model."""
+    import json as _json
+
+    payload = await request.json()
+    models: list[str] = payload.get("models", [])
+    workloads: list[str] = payload.get("workloads", [])
+    accelerator: str = payload.get("accelerator", "nvidia")
+    engine: str = payload.get("engine", "vllm")
+    cluster: str = payload.get("cluster", "hera")
+    pipeline: str = payload.get("pipeline", "forge-full")
+    owner: str = payload.get("owner", "fournos-dashboard")
+    priority: str = payload.get("priority", "manual")
+    version_label: str = payload.get("version_label", "")
+    pull_sha: str = payload.get("pull_sha", "")
+    overrides: dict = payload.get("overrides", {})
+    engine_version: str = payload.get("engine_version", "")
+
+    if not models or not workloads:
+        raise HTTPException(status_code=400, detail="models and workloads are required")
+
+    config = _rhaiis_config_cache or await asyncio.to_thread(_fetch_rhaiis_config_from_github)
+    model_entries = {m["key"]: m for m in config.get("models", [])}
+    cluster_entries = {c["key"]: c for c in config.get("clusters", [])}
+    gpu_type = cluster_entries.get(cluster, {}).get("gpu_type", "h200")
+
+    results = []
+    for model_item in models:
+        if isinstance(model_item, dict):
+            model_preset = model_item.get("preset", model_item.get("name", ""))
+            model_label = model_item.get("name", model_preset)
+            per_model_overrides = model_item.get("overrides", {})
+        else:
+            model_preset = model_item
+            model_label = model_item
+            per_model_overrides = {}
+
+        model_entry = model_entries.get(model_preset, {})
+        model_preset_overrides = model_entry.get("overrides", {})
+        model_key = model_preset_overrides.get("tests.rhaiis.model_key", model_preset)
+        cpt_tp = model_item.get("tp") if isinstance(model_item, dict) else None
+        gpu_count = cpt_tp or model_entry.get("gpu_count", 1)
+
+        args = [accelerator, engine, cluster, model_preset]
+
+        job_overrides: dict[str, Any] = {}
+        job_overrides.update(overrides)
+        job_overrides.update(per_model_overrides)
+        job_overrides["tests.rhaiis.workload_keys"] = workloads
+        if version_label:
+            job_overrides["tests.rhaiis.version"] = version_label
+        if engine_version:
+            job_overrides[f"rhaiis.engines.{engine}.images.{accelerator}"] = engine_version
+
+        display_name = f"rhaiis-cpt-{model_preset}-{cluster}"
+        generate_name = f"rhaiis-cpt-{cluster}-"
+
+        env: dict[str, str] = {}
+        if pull_sha.strip():
+            env["PULL_PULL_SHA"] = pull_sha.strip()
+
+        spec: dict[str, Any] = {
+            "cluster": cluster,
+            "displayName": display_name,
+            "owner": owner,
+            "pipeline": pipeline,
+            "exclusive": False,
+            "priority": priority,
+            "hardware": {"gpuType": gpu_type, "gpuCount": gpu_count},
+            "secretRefs": ["psap-forge-dashboard-s3", "psap-forge-notifications"],
+            "executionEngine": {
+                "forge": {
+                    "project": "rhaiis",
+                    "args": args,
+                    "configOverrides": job_overrides,
+                }
+            },
+        }
+
+        body = {
+            "apiVersion": f"{settings.fournos_api_group}/{settings.fournos_api_version}",
+            "kind": "FournosJob",
+            "metadata": {
+                "generateName": generate_name,
+                "namespace": settings.fournos_namespace,
+            },
+            "spec": spec,
+        }
+
+        if env:
+            body["spec"]["env"] = env
+
+        try:
+            created = await asyncio.to_thread(k8s_client.create_fournos_job, body)
+            created_name = created.get("metadata", {}).get("name", generate_name)
+            results.append({"model": model_label, "job_name": created_name, "status": "created"})
+
+            try:
+                async with db.async_session() as session:
+                    async with session.begin():
+                        await db.upsert_job(
+                            session,
+                            name=created_name,
+                            project="rhaiis",
+                            preset=f"cpt-{model_preset}",
+                            cluster=cluster,
+                            pipeline=pipeline,
+                            owner=owner,
+                            status="Pending",
+                            config_overrides=job_overrides,
+                            fjob_spec=body.get("spec", {}),
+                        )
+            except Exception as exc:
+                logger.error("DB upsert failed for CPT job %s: %s", created_name, exc)
+        except Exception as exc:
+            results.append({"model": model_label, "error": str(exc), "status": "failed"})
+
+    return {"status": "ok", "jobs": results, "total": len(results)}
 
 
 # ---------------------------------------------------------------------------
 # Routes: Schedules
 # ---------------------------------------------------------------------------
-
 
 @app.get("/schedules", response_class=HTMLResponse)
 async def schedules_list(request: Request):
@@ -732,17 +1222,15 @@ async def schedule_runs(request: Request, name: str):
         jobs = await db.list_jobs_by_schedule(session, name)
     runs = []
     for j in jobs:
-        runs.append(
-            {
-                "name": j.name,
-                "status": j.status,
-                "preset": j.preset,
-                "trigger_type": j.trigger_type or "scheduled",
-                "duration_seconds": j.duration_seconds,
-                "mlflow_url": j.mlflow_url,
-                "created_at": j.created_at.isoformat() if j.created_at else "",
-            }
-        )
+        runs.append({
+            "name": j.name,
+            "status": j.status,
+            "preset": j.preset,
+            "trigger_type": j.trigger_type or "scheduled",
+            "duration_seconds": j.duration_seconds,
+            "mlflow_url": j.mlflow_url,
+            "created_at": j.created_at.isoformat() if j.created_at else "",
+        })
     return _render("schedule_runs.html", schedule_name=name, runs=runs)
 
 
@@ -774,20 +1262,14 @@ async def create_schedule(
                 preset=preset,
                 image=image_source,
                 owner=owner,
-                resolver_script=resolver_script.strip()
-                .replace("\r\n", "\n")
-                .replace("\r", "\n"),
+                resolver_script=resolver_script.strip().replace("\r\n", "\n").replace("\r", "\n"),
                 resolver_image=resolver_image.strip(),
                 resolver_filename=resolver_filename.strip(),
             )
             try:
                 await asyncio.to_thread(k8s_client.delete_cronjob, edit_target)
             except Exception as del_exc:
-                logger.warning(
-                    "Failed to delete old schedule %s after replacement: %s",
-                    edit_target,
-                    del_exc,
-                )
+                logger.warning("Failed to delete old schedule %s after replacement: %s", edit_target, del_exc)
         else:
             if edit_target:
                 await asyncio.to_thread(k8s_client.delete_cronjob, edit_target)
@@ -801,9 +1283,7 @@ async def create_schedule(
                 preset=preset,
                 image=image_source,
                 owner=owner,
-                resolver_script=resolver_script.strip()
-                .replace("\r\n", "\n")
-                .replace("\r", "\n"),
+                resolver_script=resolver_script.strip().replace("\r\n", "\n").replace("\r", "\n"),
                 resolver_image=resolver_image.strip(),
                 resolver_filename=resolver_filename.strip(),
             )
@@ -868,7 +1348,6 @@ async def delete_schedule(name: str):
 # Conversion helpers
 # ---------------------------------------------------------------------------
 
-
 def _collect_clusters(live_jobs: list[dict]) -> list[str]:
     """Collect unique cluster names from live jobs."""
     clusters = set()
@@ -908,11 +1387,7 @@ def _db_job_to_fjob_dict(job: db.Job) -> dict:
 
     forge = spec.get("executionEngine", {}).get("forge", {})
     if not forge:
-        forge = {
-            "project": job.project,
-            "args": job.preset.split() if job.preset else [],
-            "configOverrides": job.config_overrides or {},
-        }
+        forge = {"project": job.project, "args": job.preset.split() if job.preset else [], "configOverrides": job.config_overrides or {}}
         spec.setdefault("executionEngine", {})["forge"] = forge
 
     spec.setdefault("cluster", job.cluster)
@@ -955,8 +1430,10 @@ def _get_version_config_key(project: str) -> str:
 
 def sanitize_job_name(prefix: str) -> str:
     """Generate a K8s-safe job name with timestamp."""
-    ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     name = f"{prefix}-{ts}".lower()
     name = re.sub(r"[^a-z0-9-]", "-", name)
     name = re.sub(r"-+", "-", name).strip("-")
     return name[:63]
+
+
