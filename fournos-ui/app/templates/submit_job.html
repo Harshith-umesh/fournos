@@ -400,7 +400,6 @@
 
             <div class="form-group">
                 <label class="checkbox-label">
-                    <input type="hidden" name="exclusive" value="false">
                     <input type="checkbox" name="exclusive" id="exclusive" value="true" checked>
                     Exclusive (lock cluster for this job)
                 </label>
@@ -457,7 +456,6 @@
             </div>
             <div class="rhaiis-field">
                 <label class="checkbox-label" style="margin-top: 24px;">
-                    <input type="hidden" name="exclusive" value="false">
                     <input type="checkbox" name="exclusive" id="rh-exclusive" value="true">
                     Exclusive
                 </label>
@@ -614,7 +612,7 @@
             <div class="rhaiis-row">
                 <div class="rhaiis-field">
                     <label for="cpt-owner">Owner</label>
-                    <input type="text" id="cpt-owner" placeholder="Your username" class="rhaiis-text-input" style="max-width:none" required>
+                    <input type="text" id="cpt-owner" placeholder="Your username" class="rhaiis-text-input" style="max-width:none">
                 </div>
                 <div class="rhaiis-field">
                     <label for="cpt-pipeline">Pipeline</label>
@@ -755,6 +753,12 @@
 <script>
 const VERSION_PROJECTS = ['mcp_gateway'];
 
+function setFormFieldsDisabled(container, disabled) {
+    container.querySelectorAll('input, select, textarea').forEach(function(el) {
+        el.disabled = disabled;
+    });
+}
+
 let _allPRs = [];
 
 async function loadOpenPRs() {
@@ -843,12 +847,17 @@ document.addEventListener('click', function(e) {
     });
 });
 
-document.addEventListener('DOMContentLoaded', loadOpenPRs);
+document.addEventListener('DOMContentLoaded', function() {
+    loadOpenPRs();
+    setFormFieldsDisabled(document.getElementById('rhaiis-form'), true);
+});
 
 /* ── Project switching ── */
 function switchToGenericForm() {
     document.getElementById('rhaiis-form').style.display = 'none';
     document.getElementById('generic-form').style.display = '';
+    setFormFieldsDisabled(document.getElementById('rhaiis-form'), true);
+    setFormFieldsDisabled(document.getElementById('generic-form'), false);
     document.getElementById('yaml-preview-section').style.display = 'none';
     document.getElementById('submit-actions').style.display = '';
     document.getElementById('project').value = '';
@@ -1117,6 +1126,9 @@ async function showRhaiisOptions() {
 
     document.getElementById('generic-form').style.display = 'none';
     document.getElementById('rhaiis-form').style.display = '';
+    setFormFieldsDisabled(document.getElementById('generic-form'), true);
+    setFormFieldsDisabled(document.getElementById('rhaiis-form'), false);
+    setFormFieldsDisabled(document.getElementById('rhaiis-cpt-form'), true);
     document.getElementById('yaml-preview-section').style.display = '';
     document.getElementById('submit-actions').style.display = '';
 }
@@ -1412,6 +1424,9 @@ function switchRhaiisMode(mode) {
 
     document.getElementById('rhaiis-single-form').style.display = mode === 'single' ? '' : 'none';
     document.getElementById('rhaiis-cpt-form').style.display = mode === 'cpt' ? '' : 'none';
+
+    setFormFieldsDisabled(document.getElementById('rhaiis-single-form'), mode !== 'single');
+    setFormFieldsDisabled(document.getElementById('rhaiis-cpt-form'), mode !== 'cpt');
 
     document.getElementById('yaml-preview-section').style.display = mode === 'single' ? '' : 'none';
     document.getElementById('submit-actions').style.display = mode === 'single' ? '' : 'none';

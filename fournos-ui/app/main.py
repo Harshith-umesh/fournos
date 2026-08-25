@@ -666,11 +666,17 @@ def _parse_cpt_models(raw_models) -> list[dict]:
     if isinstance(raw_models, dict):
         result = []
         for m, ov in raw_models.items():
-            preset = m.split("/")[0]
+            parts = m.split("/", 1)
+            preset = parts[0]
+            suffix = parts[1] if len(parts) > 1 else ""
             entry: dict[str, Any] = {"name": m, "preset": preset, "overrides": {}}
+            tp = None
             if isinstance(ov, dict):
-                entry["tp"] = ov.pop("__tp", None)
+                tp = ov.pop("__tp", None)
                 entry["overrides"] = ov
+            if tp is None and suffix.startswith("tp") and suffix[2:].isdigit():
+                tp = int(suffix[2:])
+            entry["tp"] = tp
             result.append(entry)
         return result
     return [{"name": m, "preset": m, "overrides": {}} for m in raw_models]
