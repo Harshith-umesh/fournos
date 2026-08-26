@@ -320,7 +320,7 @@
 <div class="alert alert-error">{{ error }}</div>
 {% endif %}
 
-<form method="POST" action="/submit" class="submit-form">
+<form method="POST" action="/submit" class="submit-form" onsubmit="return validateSubmit()">
     <!-- Generic form (non-rhaiis projects) -->
     <div id="generic-form">
         <div class="form-grid">
@@ -514,9 +514,55 @@
                     <option value="">Select a model</option>
                 </select>
             </div>
+            <div id="rh-custom-model-section" class="rhaiis-section" style="display:none;">
+                <div class="rhaiis-row">
+                    <div class="rhaiis-field" style="flex:0 0 220px">
+                        <label>Model Name <span style="font-weight:normal;color:var(--text-muted)" title="Display name used in dashboards and reports. Use the model's canonical name with hyphens, e.g. Llama-3.3-70B-Instruct-FP8">(?)</span></label>
+                        <input type="text" id="rh-custom-model-name" class="rhaiis-text-input" style="max-width:none"
+                               placeholder="e.g. Llama-3.3-70B-Instruct-FP8" oninput="syncRhaiisArgs()">
+                    </div>
+                    <div class="rhaiis-field">
+                        <label>HuggingFace Model ID <span style="font-weight:normal;color:var(--text-muted)" title="Must be in org/model format, matching the HuggingFace repo path, e.g. meta-llama/Llama-3.3-70B-Instruct or RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic">(?)</span></label>
+                        <input type="text" id="rh-custom-model-id" class="rhaiis-text-input" style="max-width:none"
+                               placeholder="org/model — e.g. meta-llama/Llama-3.3-70B-Instruct" oninput="syncRhaiisArgs()">
+                    </div>
+                    <div class="rhaiis-field" style="flex:0 0 120px">
+                        <label>TP Size <span style="font-weight:normal;color:var(--text-muted)" title="tensor-parallel-size: number of GPUs for model parallelism. Typically 1 for ≤24B, 2 for ≤70B, 4 for ≤235B, 8 for larger models. Auto-sets GPU count.">(?)</span></label>
+                        <input type="number" id="rh-custom-model-tp" class="rhaiis-text-input" style="max-width:none"
+                               value="1" min="1" oninput="onCustomTpChange()">
+                    </div>
+                </div>
+            </div>
             <div class="rhaiis-section">
                 <label class="rhaiis-section-label">Workload Profiles</label>
                 <div class="checkbox-group" id="rh-workloads"></div>
+            </div>
+            <div id="rh-custom-workload-section" class="rhaiis-section" style="display:none;">
+                <div class="rhaiis-row">
+                    <div class="rhaiis-field">
+                        <label>Data</label>
+                        <input type="text" id="rh-custom-wl-data" class="rhaiis-text-input" style="max-width:none"
+                               placeholder="prompt_tokens=1000,output_tokens=1000" oninput="syncRhaiisArgs()"
+                               value="prompt_tokens=1000,output_tokens=1000">
+                    </div>
+                </div>
+                <div class="rhaiis-row">
+                    <div class="rhaiis-field">
+                        <label>Concurrencies (comma-separated)</label>
+                        <input type="text" id="rh-custom-wl-concurrencies" class="rhaiis-text-input" style="max-width:none"
+                               placeholder="1,50,100,200,300" oninput="syncRhaiisArgs()" value="1">
+                    </div>
+                    <div class="rhaiis-field" style="flex:0 0 140px">
+                        <label>Max Seconds</label>
+                        <input type="number" id="rh-custom-wl-max-seconds" class="rhaiis-text-input" style="max-width:none"
+                               value="450" min="1" oninput="syncRhaiisArgs()">
+                    </div>
+                    <div class="rhaiis-field" style="flex:0 0 120px">
+                        <label>Samples <span style="font-weight:normal;color:var(--text-muted)">(opt)</span></label>
+                        <input type="number" id="rh-custom-wl-samples" class="rhaiis-text-input" style="max-width:none"
+                               min="1" placeholder="all" oninput="syncRhaiisArgs()">
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -536,9 +582,10 @@
                     <input type="checkbox" id="rh-profiler" onchange="syncRhaiisArgs()">
                     <span>Profiler</span>
                 </label>
-                <label class="switch-label" data-tooltip="Send Slack notifications on completion&#10;tests.rhaiis.slack_notify_always">
-                    <input type="checkbox" id="rh-slack" checked onchange="onSlackToggle()">
-                    <span>Slack Notifications</span>
+                <label class="switch-label" data-tooltip="Slack notifications are always enabled for single jobs&#10;tests.rhaiis.slack_notify_always"
+                       onclick="event.preventDefault()">
+                    <input type="checkbox" id="rh-slack" checked onclick="this.checked=true">
+                    <span>Slack Notifications <span style="font-size:11px;color:var(--text-muted)">(always on)</span></span>
                 </label>
                 <label class="switch-label" data-tooltip="Run AI agent analysis on results — uses tokens&#10;rhaiis.agent_analysis.enabled">
                     <input type="checkbox" id="rh-agent-analysis" onchange="onAgentAnalysisToggle()">
@@ -549,13 +596,13 @@
                     <span>Compare Versions</span>
                 </label>
                 <label class="switch-label" data-tooltip="Push results to the staging dashboard&#10;caliper.postprocess.csv_dashboard.enabled">
-                    <input type="checkbox" id="rh-csv-dashboard" onchange="syncRhaiisArgs()">
+                    <input type="checkbox" id="rh-csv-dashboard" onchange="onCsvDashboardToggle()">
                     <span>Push to Staging Dashboard</span>
                 </label>
             </div>
             <div id="rh-slack-member-section" class="rhaiis-section" style="margin-top: 12px;">
-                <label class="rhaiis-section-label">Slack Member ID <span style="font-weight:normal;color:var(--text-muted)">(optional)</span></label>
-                <input type="text" id="rh-slack-member-id" placeholder="e.g. U0123456789"
+                <label class="rhaiis-section-label">Slack Member ID <span style="font-weight:normal;color:#cf222e">(required)</span></label>
+                <input type="text" id="rh-slack-member-id" placeholder="e.g. U0123456789" required
                        class="rhaiis-text-input" oninput="syncRhaiisArgs()">
                 <span class="form-hint">In Slack, click your profile photo → <strong>Profile</strong> → click the <strong>⋮</strong> menu → <strong>Copy member ID</strong>.</span>
             </div>
@@ -752,6 +799,47 @@
 
 <script>
 const VERSION_PROJECTS = ['mcp_gateway'];
+
+function validateSubmit() {
+    if (_isRhaiisActive()) {
+        var memberId = document.getElementById('rh-slack-member-id').value.trim();
+        if (!memberId) {
+            alert('Slack Member ID is required.');
+            document.getElementById('rh-slack-member-id').focus();
+            return false;
+        }
+        if (rhaiisSelections.model === '__custom_model__') {
+            var hfId = document.getElementById('rh-custom-model-id').value.trim();
+            if (!hfId) {
+                alert('HuggingFace Model ID is required for a custom model.');
+                document.getElementById('rh-custom-model-id').focus();
+                return false;
+            }
+            var tp = parseInt(document.getElementById('rh-custom-model-tp').value) || 1;
+            var gpuCount = parseInt(document.getElementById('gpu_count').value) || 1;
+            if (gpuCount < tp) {
+                alert('GPU count (' + gpuCount + ') must be at least equal to TP size (' + tp + ').');
+                document.getElementById('gpu_count').focus();
+                return false;
+            }
+        }
+        if (rhaiisSelections.workloads.indexOf('__custom_workload__') !== -1) {
+            var data = document.getElementById('rh-custom-wl-data').value.trim();
+            if (!data) {
+                alert('Data field is required for a custom workload.');
+                document.getElementById('rh-custom-wl-data').focus();
+                return false;
+            }
+            var concurrencies = document.getElementById('rh-custom-wl-concurrencies').value.trim();
+            if (!concurrencies) {
+                alert('Concurrencies field is required for a custom workload.');
+                document.getElementById('rh-custom-wl-concurrencies').focus();
+                return false;
+            }
+        }
+    }
+    return true;
+}
 
 function setFormFieldsDisabled(container, disabled) {
     container.querySelectorAll('input, select, textarea').forEach(function(el) {
@@ -1051,6 +1139,7 @@ function renderQuickPresets(items) {
                 if (item.fills.model) {
                     document.getElementById('rh-model').value = item.fills.model;
                     rhaiisSelections.model = item.fills.model;
+                    document.getElementById('rh-custom-model-section').style.display = 'none';
                 }
                 if (item.fills.workload) {
                     const wKey = item.fills.workload;
@@ -1070,7 +1159,6 @@ function renderQuickPresets(items) {
                 const settingsMap = {
                     warmup: 'rh-warmup',
                     profiler: 'rh-profiler',
-                    slack: 'rh-slack',
                     agent_analysis: 'rh-agent-analysis',
                     csv_dashboard: 'rh-csv-dashboard',
                     compare_versions: 'rh-compare-versions',
@@ -1104,13 +1192,44 @@ function renderModelDropdown(items) {
         select.appendChild(opt);
         if (item.gpu_count) modelGpuMap[item.key] = item.gpu_count;
     }
+    const customOpt = document.createElement('option');
+    customOpt.value = '__custom_model__';
+    customOpt.textContent = 'Custom Model (provide HF model ID)';
+    select.appendChild(customOpt);
+
     select.onchange = function() {
         rhaiisSelections.model = this.value;
+        document.getElementById('rh-custom-model-section').style.display =
+            this.value === '__custom_model__' ? '' : 'none';
         if (modelGpuMap[this.value]) {
             document.getElementById('gpu_count').value = modelGpuMap[this.value];
         }
         syncRhaiisArgs();
     };
+}
+
+function addCustomWorkloadCheckbox() {
+    const container = document.getElementById('rh-workloads');
+    const label = document.createElement('label');
+    label.dataset.tooltip = 'Custom workload profile\nProvide data, concurrencies, and duration';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = '__custom_workload__';
+    cb.onchange = function() {
+        if (this.checked) {
+            rhaiisSelections.workloads.push('__custom_workload__');
+            label.classList.add('checked');
+        } else {
+            rhaiisSelections.workloads = rhaiisSelections.workloads.filter(k => k !== '__custom_workload__');
+            label.classList.remove('checked');
+        }
+        document.getElementById('rh-custom-workload-section').style.display =
+            this.checked ? '' : 'none';
+        syncRhaiisArgs();
+    };
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode('Custom'));
+    container.appendChild(label);
 }
 
 async function showRhaiisOptions() {
@@ -1123,6 +1242,7 @@ async function showRhaiisOptions() {
     renderToggleGroup('rh-cluster', cfg.clusters, 'cluster');
     renderModelDropdown(cfg.models);
     renderCheckboxGroup('rh-workloads', cfg.workloads, 'workloads');
+    addCustomWorkloadCheckbox();
 
     document.getElementById('generic-form').style.display = 'none';
     document.getElementById('rhaiis-form').style.display = '';
@@ -1148,6 +1268,15 @@ function hideRhaiisOptions() {
     document.getElementById('rh-compare-version-section').style.display = 'none';
     document.getElementById('rh-compare-versions').checked = false;
     document.getElementById('rh-agent-analysis-note').style.display = 'none';
+    document.getElementById('rh-custom-model-section').style.display = 'none';
+    document.getElementById('rh-custom-model-name').value = '';
+    document.getElementById('rh-custom-model-id').value = '';
+    document.getElementById('rh-custom-model-tp').value = '1';
+    document.getElementById('rh-custom-workload-section').style.display = 'none';
+    document.getElementById('rh-custom-wl-data').value = 'prompt_tokens=1000,output_tokens=1000';
+    document.getElementById('rh-custom-wl-concurrencies').value = '1';
+    document.getElementById('rh-custom-wl-max-seconds').value = '450';
+    document.getElementById('rh-custom-wl-samples').value = '';
     rhaiisSelections.accelerator = '';
     rhaiisSelections.engine = '';
     rhaiisSelections.cluster = '';
@@ -1162,10 +1291,7 @@ function hideRhaiisOptions() {
     document.getElementById('rh-cluster-input').value = '';
 }
 
-function updateSlackUI() {
-    var checked = document.getElementById('rh-slack').checked;
-    document.getElementById('rh-slack-member-section').style.display = checked ? '' : 'none';
-}
+function updateSlackUI() {}
 
 function updateCompareVersionUI() {
     var compareChecked = document.getElementById('rh-compare-versions').checked;
@@ -1179,6 +1305,11 @@ function updateCompareVersionUI() {
 }
 
 function onSlackToggle() {
+    updateSlackUI();
+    syncRhaiisArgs();
+}
+
+function onCsvDashboardToggle() {
     updateSlackUI();
     syncRhaiisArgs();
 }
@@ -1228,6 +1359,13 @@ function getRhaiisOverrides() {
     return overrides;
 }
 
+function onCustomTpChange() {
+    var tp = parseInt(document.getElementById('rh-custom-model-tp').value) || 1;
+    var gpuEl = document.getElementById('gpu_count');
+    if (tp > parseInt(gpuEl.value)) gpuEl.value = tp;
+    syncRhaiisArgs();
+}
+
 function syncRhaiisArgs() {
     const args = [];
     const activeQuickPreset = document.querySelector('#rh-quick-presets .toggle-btn.active');
@@ -1235,12 +1373,44 @@ function syncRhaiisArgs() {
     if (rhaiisSelections.accelerator) args.push(rhaiisSelections.accelerator);
     if (rhaiisSelections.engine) args.push(rhaiisSelections.engine);
     if (rhaiisSelections.cluster) args.push(rhaiisSelections.cluster);
-    if (rhaiisSelections.model) args.push(rhaiisSelections.model);
-    for (const w of rhaiisSelections.workloads) args.push(w);
+    if (rhaiisSelections.model && rhaiisSelections.model !== '__custom_model__') {
+        args.push(rhaiisSelections.model);
+    }
     document.getElementById('rhaiis-args-input').value = args.join(',');
     document.getElementById('rhaiis-version-input').value = document.getElementById('rh-version').value;
 
     const overrides = getRhaiisOverrides();
+
+    if (rhaiisSelections.model === '__custom_model__') {
+        overrides['tests.rhaiis.model_key'] = 'custom';
+        var cmName = document.getElementById('rh-custom-model-name').value.trim();
+        if (cmName) overrides['models.custom.name'] = cmName;
+        var hfId = document.getElementById('rh-custom-model-id').value.trim();
+        if (hfId) overrides['models.custom.hf_model_id'] = hfId;
+        var tp = document.getElementById('rh-custom-model-tp').value;
+        if (tp) overrides['models.custom.vllm_args.tensor-parallel-size'] = parseInt(tp) || 1;
+    }
+
+    if (rhaiisSelections.workloads.length > 0) {
+        var wlKeys = rhaiisSelections.workloads.map(function(w) {
+            return w === '__custom_workload__' ? 'custom' : w;
+        });
+        overrides['tests.rhaiis.workload_keys'] = wlKeys;
+    }
+
+    if (rhaiisSelections.workloads.indexOf('__custom_workload__') !== -1) {
+        var data = document.getElementById('rh-custom-wl-data').value.trim();
+        if (data) overrides['workloads.custom.data'] = data;
+        var concStr = document.getElementById('rh-custom-wl-concurrencies').value.trim();
+        if (concStr) {
+            overrides['workloads.custom.concurrencies'] = concStr.split(',').map(function(r) { return parseInt(r.trim()) || 0; });
+        }
+        var maxSec = document.getElementById('rh-custom-wl-max-seconds').value;
+        if (maxSec) overrides['workloads.custom.max_seconds'] = parseInt(maxSec) || 450;
+        var samples = document.getElementById('rh-custom-wl-samples').value;
+        if (samples) overrides['workloads.custom.samples'] = parseInt(samples);
+    }
+
     const engineVersion = document.getElementById('rh-engine-version').value.trim();
     if (engineVersion && rhaiisSelections.engine && rhaiisSelections.accelerator) {
         overrides['rhaiis.engines.' + rhaiisSelections.engine + '.images.' + rhaiisSelections.accelerator] = engineVersion;
@@ -1269,7 +1439,9 @@ function buildJobYaml() {
     if (project === 'rhaiis') {
         const argsStr = document.getElementById('rhaiis-args-input').value;
         if (argsStr) args = argsStr.split(',');
-        displayName = 'rhaiis-' + cluster + (args.length >= 2 ? '-' + args.slice(0, 2).join('-') : '');
+        var nameParts = args.slice(0, 2);
+        if (rhaiisSelections.model === '__custom_model__') nameParts.push('custom-model');
+        displayName = 'rhaiis-' + cluster + (nameParts.length ? '-' + nameParts.join('-') : '');
         generateName = 'rhaiis-' + cluster + '-';
         const versionVal = document.getElementById('rh-version').value;
         if (versionVal) configOverrides['tests.rhaiis.version'] = versionVal;
@@ -1278,6 +1450,33 @@ function buildJobYaml() {
             configOverrides['rhaiis.engines.' + rhaiisSelections.engine + '.images.' + rhaiisSelections.accelerator] = engineVer;
         }
         Object.assign(configOverrides, getRhaiisOverrides());
+
+        if (rhaiisSelections.model === '__custom_model__') {
+            configOverrides['tests.rhaiis.model_key'] = 'custom';
+            var cmName = document.getElementById('rh-custom-model-name').value.trim();
+            if (cmName) configOverrides['models.custom.name'] = cmName;
+            var hfId = document.getElementById('rh-custom-model-id').value.trim();
+            if (hfId) configOverrides['models.custom.hf_model_id'] = hfId;
+            var tp = document.getElementById('rh-custom-model-tp').value;
+            if (tp) configOverrides['models.custom.vllm_args.tensor-parallel-size'] = parseInt(tp) || 1;
+        }
+        if (rhaiisSelections.workloads.length > 0) {
+            configOverrides['tests.rhaiis.workload_keys'] = rhaiisSelections.workloads.map(function(w) {
+                return w === '__custom_workload__' ? 'custom' : w;
+            });
+        }
+        if (rhaiisSelections.workloads.indexOf('__custom_workload__') !== -1) {
+            var cwData = document.getElementById('rh-custom-wl-data').value.trim();
+            if (cwData) configOverrides['workloads.custom.data'] = cwData;
+            var cwConc = document.getElementById('rh-custom-wl-concurrencies').value.trim();
+            if (cwConc) {
+                configOverrides['workloads.custom.concurrencies'] = cwConc.split(',').map(function(r) { return parseInt(r.trim()) || 0; });
+            }
+            var cwMax = document.getElementById('rh-custom-wl-max-seconds').value;
+            if (cwMax) configOverrides['workloads.custom.max_seconds'] = parseInt(cwMax) || 450;
+            var cwSamples = document.getElementById('rh-custom-wl-samples').value;
+            if (cwSamples) configOverrides['workloads.custom.samples'] = parseInt(cwSamples);
+        }
     } else {
         const preset = document.getElementById('preset').value;
         if (preset) { args = [preset]; displayName = project + ' ' + preset; }
