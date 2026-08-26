@@ -229,8 +229,9 @@ def _gc_expired_jobs():
             )
             continue
 
-        if now >= completion_time + ttl:
-            logger.info("TTL GC: deleting expired job %s (ttl=%s)", name, ttl_raw)
+        if now < completion_time + ttl:
+            continue
+        logger.info("TTL GC: deleting expired job %s (ttl=%s)", name, ttl_raw)
             try:
                 custom.delete_namespaced_custom_object(
                     "fournos.dev",
