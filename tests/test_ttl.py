@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from fournos.core.duration import parse_duration
 from fournos.operator import _gc_expired_jobs, _get_completion_time
 
