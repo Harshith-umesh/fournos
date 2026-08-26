@@ -125,9 +125,7 @@ def test_gc_expired_jobs_deletes_expired(mock_settings, mock_client):
 def test_gc_expired_jobs_no_deletions_when_none_expired(mock_settings, mock_client):
     mock_settings.workload_namespace = "test-ns"
 
-    fresh_job = _make_terminal_job(
-        "fresh-job", "Failed", "12h", "2099-12-31T23:00:00Z"
-    )
+    fresh_job = _make_terminal_job("fresh-job", "Failed", "12h", "2099-12-31T23:00:00Z")
 
     mock_custom = MagicMock()
     mock_client.CustomObjectsApi.return_value = mock_custom

@@ -58,9 +58,7 @@ def on_create(spec, name, namespace, status, patch, body):
 
     ttl_raw = spec.get("ttl")
     if ttl_raw and parse_duration(ttl_raw) is None:
-        set_terminal_phase(
-            patch, Phase.FAILED, f"Invalid ttl value: {ttl_raw!r}"
-        )
+        set_terminal_phase(patch, Phase.FAILED, f"Invalid ttl value: {ttl_raw!r}")
         logger.error("Job %s: invalid ttl %r", name, ttl_raw)
         return
 
@@ -431,7 +429,9 @@ def reconcile_pending(spec, name, status, patch, body):
     # --- Workload admitted ---
     assigned_cluster = KueueClient.get_assigned_flavor(wl)
     if not assigned_cluster:
-        set_terminal_phase(patch, Phase.FAILED, "Workload admitted but no flavor assigned")
+        set_terminal_phase(
+            patch, Phase.FAILED, "Workload admitted but no flavor assigned"
+        )
         set_condition(
             patch,
             conditions,

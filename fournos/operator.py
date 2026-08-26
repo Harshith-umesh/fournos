@@ -220,16 +220,12 @@ def _gc_expired_jobs():
 
         ttl = parse_duration(ttl_raw)
         if ttl is None:
-            logger.debug(
-                "TTL GC: job %s has invalid ttl %r, ignoring", name, ttl_raw
-            )
+            logger.debug("TTL GC: job %s has invalid ttl %r, ignoring", name, ttl_raw)
             continue
 
         completion_time = _get_completion_time(job)
         if completion_time is None:
-            logger.debug(
-                "TTL GC: job %s has ttl but no completionTime set", name
-            )
+            logger.debug("TTL GC: job %s has ttl but no completionTime set", name)
             continue
 
         if now < completion_time + ttl:
@@ -244,6 +240,4 @@ def _gc_expired_jobs():
                 name,
             )
         except client.exceptions.ApiException as exc:
-            logger.error(
-                "TTL GC: failed to delete job %s: %s", name, exc.reason
-            )
+            logger.error("TTL GC: failed to delete job %s: %s", name, exc.reason)

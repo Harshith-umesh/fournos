@@ -5,9 +5,7 @@ from __future__ import annotations
 import re
 from datetime import timedelta
 
-_DURATION_RE = re.compile(
-    r"(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$"
-)
+_DURATION_RE = re.compile(r"(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 
 
 def parse_duration(value: str) -> timedelta | None:
