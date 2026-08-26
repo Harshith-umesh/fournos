@@ -20,6 +20,7 @@ from .status import (
     COND_WORKLOAD_ADMITTED,
     owner_ref,
     set_condition,
+    set_terminal_phase,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,8 +74,7 @@ def handle_shutdown(name, status, patch, shutdown):
         )
     else:
         ctx.kueue.delete_workload(name)
-        patch.status["phase"] = Phase.STOPPED
-        patch.status["message"] = "Job stopped by user"
+        set_terminal_phase(patch, Phase.STOPPED, "Job stopped by user")
         set_condition(
             patch,
             conditions,
@@ -119,8 +119,7 @@ def _finish_stop(name, conditions, patch, pr_message):
     """Transition from Stopping to Stopped: delete Workload and set terminal status."""
     ctx.kueue.delete_workload(name)
 
-    patch.status["phase"] = Phase.STOPPED
-    patch.status["message"] = "Job stopped by user"
+    set_terminal_phase(patch, Phase.STOPPED, "Job stopped by user")
 
     set_condition(
         patch,
@@ -166,8 +165,9 @@ def reconcile_admitted(spec, name, namespace, status, patch, body):
                     cluster, name, owner_ref(body)
                 )
             except client.exceptions.ApiException as exc:
-                patch.status["phase"] = Phase.FAILED
-                patch.status["message"] = f"Failed to copy kubeconfig: {exc.reason}"
+                set_terminal_phase(
+                    patch, Phase.FAILED, f"Failed to copy kubeconfig: {exc.reason}"
+                )
                 set_condition(
                     patch,
                     conditions,
@@ -187,8 +187,7 @@ def reconcile_admitted(spec, name, namespace, status, patch, body):
             )
         except (KeyError, client.exceptions.ApiException) as exc:
             msg = str(exc).strip("'\"") if isinstance(exc, KeyError) else exc.reason
-            patch.status["phase"] = Phase.FAILED
-            patch.status["message"] = msg
+            set_terminal_phase(patch, Phase.FAILED, msg)
             set_condition(
                 patch,
                 conditions,
@@ -218,8 +217,9 @@ def reconcile_admitted(spec, name, namespace, status, patch, body):
                 )
         except client.exceptions.ApiException as exc:
             if exc.status != 409:
-                patch.status["phase"] = Phase.FAILED
-                patch.status["message"] = f"Failed to create PipelineRun: {exc.reason}"
+                set_terminal_phase(
+                    patch, Phase.FAILED, f"Failed to create PipelineRun: {exc.reason}"
+                )
                 set_condition(
                     patch,
                     conditions,
@@ -261,8 +261,7 @@ def reconcile_running(name, status, patch):
     conditions = list(status.get("conditions") or [])
 
     if pr is None:
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = "PipelineRun not found"
+        set_terminal_phase(patch, Phase.FAILED, "PipelineRun not found")
         set_condition(
             patch,
             conditions,
@@ -280,8 +279,7 @@ def reconcile_running(name, status, patch):
         "Job %s: PipelineRun status=%s, message=%s", name, pr_status, pr_message
     )
     if pr_status == "succeeded":
-        patch.status["phase"] = Phase.SUCCEEDED
-        patch.status["message"] = "Pipeline completed successfully"
+        set_terminal_phase(patch, Phase.SUCCEEDED, "Pipeline completed successfully")
         set_condition(
             patch,
             conditions,
@@ -293,8 +291,7 @@ def reconcile_running(name, status, patch):
         ctx.kueue.delete_workload(name)
         logger.info("Job %s: succeeded", name)
     elif pr_status == "failed":
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = pr_message or "PipelineRun failed"
+        set_terminal_phase(patch, Phase.FAILED, pr_message or "PipelineRun failed")
         set_condition(
             patch,
             conditions,

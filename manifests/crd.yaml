@@ -203,6 +203,13 @@ spec:
                   type: string
                 message:
                   type: string
+                completionTime:
+                  type: string
+                  format: date-time
+                  description: >-
+                    Timestamp when the job entered a terminal phase
+                    (Succeeded/Failed/Stopped). Used by the TTL GC to
+                    determine when to delete the CR.
                 lastScheduledTime:
                   type: string
                   format: date-time

@@ -179,19 +179,23 @@ def _gc_stale_resources():
 
 
 def _get_completion_time(job: dict) -> datetime | None:
-    """Return the time the job entered its terminal phase, or None."""
-    conditions = job.get("status", {}).get("conditions") or []
-    phase = job.get("status", {}).get("phase", "")
-    for cond in reversed(conditions):
-        if cond.get("reason") == phase and cond.get("lastTransitionTime"):
-            try:
-                ts = datetime.fromisoformat(cond["lastTransitionTime"])
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=UTC)
-                return ts
-            except (ValueError, TypeError):
-                pass
-    return None
+    """Return the time the job entered its terminal phase.
+
+    Prefers status.completionTime (set by the operator on terminal transitions).
+    Falls back to metadata.creationTimestamp for jobs that failed at creation.
+    """
+    raw = job.get("status", {}).get("completionTime")
+    if not raw:
+        raw = job.get("metadata", {}).get("creationTimestamp")
+    if not raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(raw)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        return ts
+    except (ValueError, TypeError):
+        return None
 
 
 def _gc_expired_jobs():
@@ -216,31 +220,30 @@ def _gc_expired_jobs():
 
         ttl = parse_duration(ttl_raw)
         if ttl is None:
-            logger.warning(
+            logger.debug(
                 "TTL GC: job %s has invalid ttl %r, ignoring", name, ttl_raw
             )
             continue
 
         completion_time = _get_completion_time(job)
         if completion_time is None:
-            logger.warning(
-                "TTL GC: job %s has ttl but no completion timestamp in conditions",
-                name,
+            logger.debug(
+                "TTL GC: job %s has ttl but no completionTime set", name
             )
             continue
 
         if now < completion_time + ttl:
             continue
         logger.info("TTL GC: deleting expired job %s (ttl=%s)", name, ttl_raw)
-            try:
-                custom.delete_namespaced_custom_object(
-                    "fournos.dev",
-                    "v1",
-                    settings.workload_namespace,
-                    "fournosjobs",
-                    name,
-                )
-            except client.exceptions.ApiException as exc:
-                logger.error(
-                    "TTL GC: failed to delete job %s: %s", name, exc.reason
-                )
+        try:
+            custom.delete_namespaced_custom_object(
+                "fournos.dev",
+                "v1",
+                settings.workload_namespace,
+                "fournosjobs",
+                name,
+            )
+        except client.exceptions.ApiException as exc:
+            logger.error(
+                "TTL GC: failed to delete job %s: %s", name, exc.reason
+            )

@@ -24,6 +24,7 @@ from fournos.core.constants import (
     LOCK_HOLDING_PHASES,
     Phase,
 )
+from fournos.core.duration import parse_duration
 from fournos.core.kueue import KueueClient
 from fournos.settings import settings
 from fournos.state import ctx
@@ -34,6 +35,7 @@ from .status import (
     CRD_VERSION,
     owner_ref,
     set_condition,
+    set_terminal_phase,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,9 +52,16 @@ def on_create(spec, name, namespace, status, patch, body):
 
     shutdown = spec.get("shutdown")
     if shutdown is not None:
-        patch.status["phase"] = Phase.STOPPED
-        patch.status["message"] = "Job stopped by user"
+        set_terminal_phase(patch, Phase.STOPPED, "Job stopped by user")
         logger.info("Job %s: created with shutdown=%s, skipping", name, shutdown)
+        return
+
+    ttl_raw = spec.get("ttl")
+    if ttl_raw and parse_duration(ttl_raw) is None:
+        set_terminal_phase(
+            patch, Phase.FAILED, f"Invalid ttl value: {ttl_raw!r}"
+        )
+        logger.error("Job %s: invalid ttl %r", name, ttl_raw)
         return
 
     cron_expr = spec.get("schedule")
@@ -422,8 +431,7 @@ def reconcile_pending(spec, name, status, patch, body):
     # --- Workload admitted ---
     assigned_cluster = KueueClient.get_assigned_flavor(wl)
     if not assigned_cluster:
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = "Workload admitted but no flavor assigned"
+        set_terminal_phase(patch, Phase.FAILED, "Workload admitted but no flavor assigned")
         set_condition(
             patch,
             conditions,

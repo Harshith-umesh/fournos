@@ -60,6 +60,13 @@ def set_condition(
     patch.status["conditions"] = result
 
 
+def set_terminal_phase(patch, phase: str, message: str) -> None:
+    """Set phase, message, and completionTime for a terminal transition."""
+    patch.status["phase"] = phase
+    patch.status["message"] = message
+    patch.status["completionTime"] = utcnow()
+
+
 def create_workload_for_job(spec, name, body):
     """Create a Kueue Workload with cluster-slot reservation."""
     from fournos.state import ctx

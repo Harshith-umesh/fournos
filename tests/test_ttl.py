@@ -38,43 +38,29 @@ def test_parse_duration(value, expected):
 # ---------------------------------------------------------------------------
 
 
-def test_get_completion_time_from_conditions():
+def test_get_completion_time_from_status_field():
     job = {
+        "metadata": {"creationTimestamp": "2026-08-20T08:00:00Z"},
         "status": {
             "phase": "Succeeded",
-            "conditions": [
-                {
-                    "type": "PipelineRunReady",
-                    "status": "True",
-                    "reason": "Succeeded",
-                    "lastTransitionTime": "2026-08-20T10:00:00Z",
-                },
-            ],
+            "completionTime": "2026-08-20T10:00:00Z",
         },
     }
     result = _get_completion_time(job)
     assert result == datetime(2026, 8, 20, 10, 0, 0, tzinfo=UTC)
 
 
-def test_get_completion_time_no_matching_condition():
+def test_get_completion_time_falls_back_to_creation_timestamp():
     job = {
-        "status": {
-            "phase": "Succeeded",
-            "conditions": [
-                {
-                    "type": "WorkloadAdmitted",
-                    "status": "True",
-                    "reason": "Admitted",
-                    "lastTransitionTime": "2026-08-20T09:00:00Z",
-                },
-            ],
-        },
+        "metadata": {"creationTimestamp": "2026-08-20T09:00:00Z"},
+        "status": {"phase": "Failed"},
     }
-    assert _get_completion_time(job) is None
+    result = _get_completion_time(job)
+    assert result == datetime(2026, 8, 20, 9, 0, 0, tzinfo=UTC)
 
 
-def test_get_completion_time_no_conditions():
-    job = {"status": {"phase": "Failed"}}
+def test_get_completion_time_no_timestamps():
+    job = {"metadata": {}, "status": {"phase": "Failed"}}
     assert _get_completion_time(job) is None
 
 
@@ -90,14 +76,7 @@ def _make_terminal_job(name, phase, ttl, completed_at):
         "spec": {"ttl": ttl},
         "status": {
             "phase": phase,
-            "conditions": [
-                {
-                    "type": "PipelineRunReady",
-                    "status": "True" if phase == "Succeeded" else "False",
-                    "reason": phase,
-                    "lastTransitionTime": completed_at,
-                },
-            ],
+            "completionTime": completed_at,
         },
     }
 
@@ -118,14 +97,7 @@ def test_gc_expired_jobs_deletes_expired(mock_settings, mock_client):
         "spec": {},
         "status": {
             "phase": "Failed",
-            "conditions": [
-                {
-                    "type": "PipelineRunReady",
-                    "status": "False",
-                    "reason": "Failed",
-                    "lastTransitionTime": "2020-01-01T00:00:00Z",
-                }
-            ],
+            "completionTime": "2020-01-01T00:00:00Z",
         },
     }
     running_job = {
