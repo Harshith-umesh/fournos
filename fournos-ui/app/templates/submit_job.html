@@ -250,14 +250,16 @@
 .checkbox-group label[data-tooltip],
 .switch-label[data-tooltip],
 .cpt-matrix-table th[data-tooltip],
-.cpt-matrix-table td[data-tooltip] {
+.cpt-matrix-table td[data-tooltip],
+.hint-icon[data-tooltip] {
     position: relative;
 }
 .toggle-btn[data-tooltip]:hover::after,
 .checkbox-group label[data-tooltip]:hover::after,
 .switch-label[data-tooltip]:hover::after,
 .cpt-matrix-table th[data-tooltip]:hover::after,
-.cpt-matrix-table td[data-tooltip]:hover::after {
+.cpt-matrix-table td[data-tooltip]:hover::after,
+.hint-icon[data-tooltip]:hover::after {
     content: attr(data-tooltip);
     position: absolute;
     bottom: calc(100% + 10px);
@@ -277,11 +279,19 @@
     line-height: 1.6;
     pointer-events: none;
 }
+.hint-icon {
+    display: inline-block;
+    font-weight: normal;
+    color: var(--text-muted);
+    cursor: help;
+    font-size: 12px;
+}
 .toggle-btn[data-tooltip]:hover::before,
 .checkbox-group label[data-tooltip]:hover::before,
 .switch-label[data-tooltip]:hover::before,
 .cpt-matrix-table th[data-tooltip]:hover::before,
-.cpt-matrix-table td[data-tooltip]:hover::before {
+.cpt-matrix-table td[data-tooltip]:hover::before,
+.hint-icon[data-tooltip]:hover::before {
     content: '';
     position: absolute;
     bottom: calc(100% + 2px);
@@ -498,7 +508,7 @@
                            placeholder="Auto-detected" style="max-width:none">
                 </div>
                 <div class="rhaiis-field" style="flex:0 0 120px">
-                    <label for="gpu_count">GPU Count</label>
+                    <label for="gpu_count">GPU Count <span class="hint-icon" data-tooltip="Number of GPUs to reserve on the node.&#10;Must be ≥ TP size. Set higher than TP&#10;for multi-node or extra memory.&#10;This is NOT the tensor-parallel-size.">(?)</span></label>
                     <input type="number" name="gpu_count" id="gpu_count" min="1" value="1"
                            class="rhaiis-text-input" style="max-width:none">
                 </div>
@@ -514,20 +524,32 @@
                     <option value="">Select a model</option>
                 </select>
             </div>
+            <div id="rh-tp-override-section" class="rhaiis-section" style="display:none;">
+                <div class="rhaiis-row">
+                    <div class="rhaiis-field" style="flex:0 0 160px">
+                        <label>TP Size Override <span class="hint-icon" data-tooltip="Override tensor-parallel-size for this model.&#10;Pre-filled with the model's default.&#10;Changing this also updates GPU count.">(?)</span></label>
+                        <input type="number" id="rh-tp-override" class="rhaiis-text-input" style="max-width:none"
+                               min="1" oninput="onTpOverrideChange()">
+                    </div>
+                    <div class="rhaiis-field" style="flex:1; align-self:end; padding-bottom:6px;">
+                        <span id="rh-tp-override-hint" style="font-size:12px; color:var(--text-muted);"></span>
+                    </div>
+                </div>
+            </div>
             <div id="rh-custom-model-section" class="rhaiis-section" style="display:none;">
                 <div class="rhaiis-row">
                     <div class="rhaiis-field" style="flex:0 0 220px">
-                        <label>Model Name <span style="font-weight:normal;color:var(--text-muted)" title="Display name used in dashboards and reports. Use the model's canonical name with hyphens, e.g. Llama-3.3-70B-Instruct-FP8">(?)</span></label>
+                        <label>Model Name <span class="hint-icon" data-tooltip="Display name for dashboards and reports.&#10;Use the model's canonical name with hyphens.&#10;e.g. Llama-3.3-70B-Instruct-FP8">(?)</span></label>
                         <input type="text" id="rh-custom-model-name" class="rhaiis-text-input" style="max-width:none"
                                placeholder="e.g. Llama-3.3-70B-Instruct-FP8" oninput="syncRhaiisArgs()">
                     </div>
                     <div class="rhaiis-field">
-                        <label>HuggingFace Model ID <span style="font-weight:normal;color:var(--text-muted)" title="Must be in org/model format, matching the HuggingFace repo path, e.g. meta-llama/Llama-3.3-70B-Instruct or RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic">(?)</span></label>
+                        <label>HuggingFace Model ID <span class="hint-icon" data-tooltip="Must be in org/model format.&#10;Use the HuggingFace repo path.&#10;e.g. meta-llama/Llama-3.3-70B-Instruct&#10;e.g. RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic">(?)</span></label>
                         <input type="text" id="rh-custom-model-id" class="rhaiis-text-input" style="max-width:none"
                                placeholder="org/model — e.g. meta-llama/Llama-3.3-70B-Instruct" oninput="syncRhaiisArgs()">
                     </div>
                     <div class="rhaiis-field" style="flex:0 0 120px">
-                        <label>TP Size <span style="font-weight:normal;color:var(--text-muted)" title="tensor-parallel-size: number of GPUs for model parallelism. Typically 1 for ≤24B, 2 for ≤70B, 4 for ≤235B, 8 for larger models. Auto-sets GPU count.">(?)</span></label>
+                        <label>TP Size <span class="hint-icon" data-tooltip="tensor-parallel-size&#10;Number of GPUs for model parallelism.&#10;1 for ≤24B, 2 for ≤70B&#10;4 for ≤235B, 8 for larger&#10;Auto-sets GPU count.">(?)</span></label>
                         <input type="number" id="rh-custom-model-tp" class="rhaiis-text-input" style="max-width:none"
                                value="1" min="1" oninput="onCustomTpChange()">
                     </div>
@@ -574,13 +596,13 @@
                     <input type="checkbox" id="rh-benchmark" checked onchange="syncRhaiisArgs()">
                     <span>Benchmark</span>
                 </label>
-                <label class="switch-label" data-tooltip="Run warmup requests before the benchmark&#10;tests.rhaiis.warmup">
-                    <input type="checkbox" id="rh-warmup" onchange="syncRhaiisArgs()">
-                    <span>Warmup</span>
+                <label class="switch-label" data-tooltip="Run warmup requests before the benchmark&#10;tests.rhaiis.warmup&#10;&#10;Default: 200 req/s for 60 seconds">
+                    <input type="checkbox" id="rh-warmup" checked onchange="syncRhaiisArgs()">
+                    <span>Warmup <span style="font-size:11px; color:var(--text-muted)">(200 req/s, 60s)</span></span>
                 </label>
-                <label class="switch-label" data-tooltip="Collect PyTorch profiler traces&#10;rhaiis.profiler.enabled">
+                <label class="switch-label" data-tooltip="Collect PyTorch profiler traces&#10;rhaiis.profiler.enabled&#10;&#10;Default: 200 req/s for 200 seconds">
                     <input type="checkbox" id="rh-profiler" onchange="syncRhaiisArgs()">
-                    <span>Profiler</span>
+                    <span>Profiler <span style="font-size:11px; color:var(--text-muted)">(200 req/s, 200s)</span></span>
                 </label>
                 <label class="switch-label" data-tooltip="Slack notifications are always enabled for single jobs&#10;tests.rhaiis.slack_notify_always"
                        onclick="event.preventDefault()">
@@ -645,9 +667,36 @@
         <details class="rhaiis-advanced">
             <summary>Advanced: Config Overrides</summary>
             <div style="padding: 16px 0 0;">
-                <textarea name="config_overrides_raw" id="rh-config-overrides" rows="3"
+                <details style="margin-bottom:10px;">
+                    <summary style="cursor:pointer; font-weight:600; font-size:13px; color:#1f6feb; background:linear-gradient(135deg, rgba(31,111,235,0.08), rgba(56,139,253,0.12)); padding:8px 14px; border-radius:6px; border:1px solid rgba(31,111,235,0.25); display:inline-block;">
+                        📋 Show override examples
+                    </summary>
+                    <pre style="margin:8px 0 0; padding:12px 14px; background:linear-gradient(135deg, rgba(31,111,235,0.04), rgba(56,139,253,0.06)); border:1px solid rgba(31,111,235,0.15); border-radius:6px; font-size:12px; line-height:1.7; white-space:pre; font-family:'SF Mono',Monaco,Consolas,monospace; overflow-x:auto; color:var(--text-primary);">
+# Engine / vLLM args
+rhaiis.engines.vllm.images.nvidia: vllm/vllm-openai:v0.24.0
+rhaiis.engines.vllm.args.tensor-parallel-size: 1
+rhaiis.engines.vllm.args.max-model-len: 4096
+rhaiis.engines.vllm.args.kv-cache-dtype: fp8
+rhaiis.engines.vllm.args.enable-auto-tool-choice: true
+rhaiis.engines.vllm.args.tool-call-parser: openai
+
+# Speculative decoding
+rhaiis.engines.vllm.args.speculative-config: '{"model":"...","num_speculative_tokens":7,"method":"eagle3"}'
+
+# Workload tuning (per-profile overrides)
+workloads.profile1.rates: [1,50]
+workloads.profile1.max_seconds: 30
+workloads.profile1.rampup: 0
+workloads.profile1.samples: 50
+
+# Deployment / cluster
+rhaiis.cluster_tag: "hera2"
+rhaiis.deploy.image_pull_secrets: ["my-image-pull"]
+benchmarks.guidellm.fs_group: 0</pre>
+                </details>
+                <textarea name="config_overrides_raw" id="rh-config-overrides" rows="4"
                           class="rhaiis-text-input" style="max-width:none; width:100%; font-family:'SF Mono',Monaco,Consolas,monospace; font-size:13px;"
-                          placeholder="key: value (one per line)&#10;e.g. tests.rhaiis.max_tokens: 1024"></textarea>
+                          placeholder="key: value (one per line)"></textarea>
                 <span class="form-hint">Additional /var directives. One key: value per line.</span>
             </div>
         </details>
@@ -800,6 +849,31 @@
 <script>
 const VERSION_PROJECTS = ['mcp_gateway'];
 
+function parseYamlValue(s) {
+    if (s === 'true') return true;
+    if (s === 'false') return false;
+    if (s === 'null' || s === '~') return null;
+    if (/^-?\d+$/.test(s)) return parseInt(s, 10);
+    if (/^-?\d+\.\d+$/.test(s)) return parseFloat(s);
+    if (s.startsWith('[') && s.endsWith(']')) {
+        try { return JSON.parse(s); } catch(e) {}
+    }
+    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+        return s.slice(1, -1);
+    }
+    return s;
+}
+
+function toYamlStr(v) {
+    if (v === true) return 'true';
+    if (v === false) return 'false';
+    if (v === null) return 'null';
+    if (Array.isArray(v)) return JSON.stringify(v);
+    if (typeof v === 'number') return String(v);
+    if (typeof v === 'string' && /[:{}\[\],&*?|>!'"%@`]/.test(v)) return JSON.stringify(v);
+    return String(v);
+}
+
 function validateSubmit() {
     if (_isRhaiisActive()) {
         var memberId = document.getElementById('rh-slack-member-id').value.trim();
@@ -815,7 +889,11 @@ function validateSubmit() {
                 document.getElementById('rh-custom-model-id').focus();
                 return false;
             }
-            var tp = parseInt(document.getElementById('rh-custom-model-tp').value) || 1;
+        }
+        if (rhaiisSelections.model) {
+            var tp = rhaiisSelections.model === '__custom_model__'
+                ? (parseInt(document.getElementById('rh-custom-model-tp').value) || 1)
+                : (parseInt(document.getElementById('rh-tp-override').value) || 1);
             var gpuCount = parseInt(document.getElementById('gpu_count').value) || 1;
             if (gpuCount < tp) {
                 alert('GPU count (' + gpuCount + ') must be at least equal to TP size (' + tp + ').');
@@ -1140,6 +1218,11 @@ function renderQuickPresets(items) {
                     document.getElementById('rh-model').value = item.fills.model;
                     rhaiisSelections.model = item.fills.model;
                     document.getElementById('rh-custom-model-section').style.display = 'none';
+                    var presetTp = _modelGpuMap[item.fills.model] || 1;
+                    document.getElementById('rh-tp-override').value = presetTp;
+                    document.getElementById('rh-tp-override-hint').textContent = 'Default for this model: ' + presetTp;
+                    document.getElementById('rh-tp-override-section').style.display = '';
+                    document.getElementById('gpu_count').value = presetTp;
                 }
                 if (item.fills.workload) {
                     const wKey = item.fills.workload;
@@ -1178,31 +1261,45 @@ function renderQuickPresets(items) {
     }
 }
 
+var _modelGpuMap = {};
+var _modelKeyMap = {};
+
 function renderModelDropdown(items) {
     const select = document.getElementById('rh-model');
     select.innerHTML = '<option value="">Select a model</option>';
-    const modelGpuMap = {};
+    _modelGpuMap = {};
+    _modelKeyMap = {};
+    const customOpt = document.createElement('option');
+    customOpt.value = '__custom_model__';
+    customOpt.textContent = 'Custom Model (provide HF model ID)';
+    select.appendChild(customOpt);
+
     for (const item of items) {
         const opt = document.createElement('option');
         opt.value = item.key;
         opt.textContent = item.label + ' (' + item.key + ')';
         if (item.overrides) {
             opt.title = formatOverridesTooltip(item.overrides);
+            var mk = item.overrides['tests.rhaiis.model_key'];
+            if (mk) _modelKeyMap[item.key] = mk;
         }
         select.appendChild(opt);
-        if (item.gpu_count) modelGpuMap[item.key] = item.gpu_count;
+        if (item.gpu_count) _modelGpuMap[item.key] = item.gpu_count;
     }
-    const customOpt = document.createElement('option');
-    customOpt.value = '__custom_model__';
-    customOpt.textContent = 'Custom Model (provide HF model ID)';
-    select.appendChild(customOpt);
 
     select.onchange = function() {
         rhaiisSelections.model = this.value;
-        document.getElementById('rh-custom-model-section').style.display =
-            this.value === '__custom_model__' ? '' : 'none';
-        if (modelGpuMap[this.value]) {
-            document.getElementById('gpu_count').value = modelGpuMap[this.value];
+        var isCustom = this.value === '__custom_model__';
+        var isSelected = this.value && !isCustom;
+        document.getElementById('rh-custom-model-section').style.display = isCustom ? '' : 'none';
+        document.getElementById('rh-tp-override-section').style.display = isSelected ? '' : 'none';
+        if (isSelected) {
+            var defaultTp = _modelGpuMap[this.value] || 1;
+            document.getElementById('rh-tp-override').value = defaultTp;
+            document.getElementById('rh-tp-override-hint').textContent = 'Default for this model: ' + defaultTp;
+            document.getElementById('gpu_count').value = defaultTp;
+        } else if (isCustom) {
+            document.getElementById('rh-tp-override').value = '';
         }
         syncRhaiisArgs();
     };
@@ -1268,6 +1365,9 @@ function hideRhaiisOptions() {
     document.getElementById('rh-compare-version-section').style.display = 'none';
     document.getElementById('rh-compare-versions').checked = false;
     document.getElementById('rh-agent-analysis-note').style.display = 'none';
+    document.getElementById('rh-tp-override-section').style.display = 'none';
+    document.getElementById('rh-tp-override').value = '';
+    document.getElementById('rh-tp-override-hint').textContent = '';
     document.getElementById('rh-custom-model-section').style.display = 'none';
     document.getElementById('rh-custom-model-name').value = '';
     document.getElementById('rh-custom-model-id').value = '';
@@ -1352,7 +1452,7 @@ function getRhaiisOverrides() {
     // NOTE: rhaiis.compare_versions.enabled does NOT exist in Forge's config
     // schema (it's a preset categorization key only). Do NOT send it.
     const slackMemberId = document.getElementById('rh-slack-member-id').value.trim();
-    if (slackMemberId) overrides['tests.rhaiis.slack_member_id'] = slackMemberId;
+    if (slackMemberId) overrides['tests.rhaiis.slack_user'] = slackMemberId;
     const compareVersion = document.getElementById('rh-compare-version').value.trim();
     if (compareVersion) overrides['tests.rhaiis.compare_version'] = compareVersion;
 
@@ -1361,6 +1461,13 @@ function getRhaiisOverrides() {
 
 function onCustomTpChange() {
     var tp = parseInt(document.getElementById('rh-custom-model-tp').value) || 1;
+    var gpuEl = document.getElementById('gpu_count');
+    if (tp > parseInt(gpuEl.value)) gpuEl.value = tp;
+    syncRhaiisArgs();
+}
+
+function onTpOverrideChange() {
+    var tp = parseInt(document.getElementById('rh-tp-override').value) || 1;
     var gpuEl = document.getElementById('gpu_count');
     if (tp > parseInt(gpuEl.value)) gpuEl.value = tp;
     syncRhaiisArgs();
@@ -1388,7 +1495,13 @@ function syncRhaiisArgs() {
         var hfId = document.getElementById('rh-custom-model-id').value.trim();
         if (hfId) overrides['models.custom.hf_model_id'] = hfId;
         var tp = document.getElementById('rh-custom-model-tp').value;
-        if (tp) overrides['models.custom.vllm_args.tensor-parallel-size'] = parseInt(tp) || 1;
+        if (tp) overrides['rhaiis.engines.vllm.args.tensor-parallel-size'] = parseInt(tp) || 1;
+    } else if (rhaiisSelections.model) {
+        var tpOverride = parseInt(document.getElementById('rh-tp-override').value);
+        var defaultTp = _modelGpuMap[rhaiisSelections.model] || 1;
+        if (tpOverride && tpOverride !== defaultTp) {
+            overrides['rhaiis.engines.vllm.args.tensor-parallel-size'] = tpOverride;
+        }
     }
 
     if (rhaiisSelections.workloads.length > 0) {
@@ -1458,7 +1571,13 @@ function buildJobYaml() {
             var hfId = document.getElementById('rh-custom-model-id').value.trim();
             if (hfId) configOverrides['models.custom.hf_model_id'] = hfId;
             var tp = document.getElementById('rh-custom-model-tp').value;
-            if (tp) configOverrides['models.custom.vllm_args.tensor-parallel-size'] = parseInt(tp) || 1;
+            if (tp) configOverrides['rhaiis.engines.vllm.args.tensor-parallel-size'] = parseInt(tp) || 1;
+        } else if (rhaiisSelections.model) {
+            var tpOverride = parseInt(document.getElementById('rh-tp-override').value);
+            var defaultTp = _modelGpuMap[rhaiisSelections.model] || 1;
+            if (tpOverride && tpOverride !== defaultTp) {
+                configOverrides['rhaiis.engines.vllm.args.tensor-parallel-size'] = tpOverride;
+            }
         }
         if (rhaiisSelections.workloads.length > 0) {
             configOverrides['tests.rhaiis.workload_keys'] = rhaiisSelections.workloads.map(function(w) {
@@ -1487,8 +1606,10 @@ function buildJobYaml() {
     const overridesRaw = document.getElementById(isRhaiis ? 'rh-config-overrides' : 'config_overrides_raw')?.value || '';
     if (overridesRaw.trim()) {
         for (const line of overridesRaw.trim().split('\n')) {
-            const idx = line.indexOf(':');
-            if (idx > 0) configOverrides[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+            var cLine = line.trim();
+            if (!cLine || cLine.startsWith('#')) continue;
+            const idx = cLine.indexOf(':');
+            if (idx > 0) configOverrides[cLine.slice(0, idx).trim()] = parseYamlValue(cLine.slice(idx + 1).trim());
         }
     }
 
@@ -1528,7 +1649,7 @@ function buildJobYaml() {
     const overrideKeys = Object.keys(configOverrides);
     if (overrideKeys.length) {
         yaml += '      configOverrides:\n';
-        for (const k of overrideKeys) yaml += '        ' + k + ': ' + JSON.stringify(configOverrides[k]) + '\n';
+        for (const k of overrideKeys) yaml += '        ' + k + ': ' + toYamlStr(configOverrides[k]) + '\n';
     } else {
         yaml += '      configOverrides: {}\n';
     }
@@ -1898,7 +2019,7 @@ function buildCptExampleYaml() {
         overrides['rhaiis.engines.' + engine + '.images.' + accel] = engineVersion;
     }
     if (compareVersion) overrides['tests.rhaiis.compare_version'] = compareVersion;
-    if (slackTarget) overrides['tests.rhaiis.slack_member_id'] = slackTarget;
+    if (slackTarget) overrides['tests.rhaiis.slack_user'] = slackTarget;
 
     const firstModel = models[0];
     const modelName = getCptModelName(firstModel);
@@ -1977,7 +2098,7 @@ async function submitCpt() {
     const cptCompare = document.getElementById('cpt-compare-version').value.trim();
     const cptSlack = document.getElementById('cpt-slack-target').value.trim();
     if (cptCompare) overrides['tests.rhaiis.compare_version'] = cptCompare;
-    if (cptSlack) overrides['tests.rhaiis.slack_member_id'] = cptSlack;
+    if (cptSlack) overrides['tests.rhaiis.slack_user'] = cptSlack;
 
     const btn = document.getElementById('cpt-submit-btn');
     btn.disabled = true;

@@ -946,6 +946,36 @@ async def rhaiis_config_refresh():
             "models": len(result.get("models", []))}
 
 
+def _parse_yaml_value(raw: str) -> Any:
+    """Coerce a raw string from the config overrides textarea into a typed value."""
+    import json as _json
+
+    if raw.lower() == "true":
+        return True
+    if raw.lower() == "false":
+        return False
+    if raw in ("null", "~", ""):
+        return None
+    if raw.startswith("[") and raw.endswith("]"):
+        try:
+            return _json.loads(raw)
+        except (ValueError, TypeError):
+            pass
+    if raw.startswith('"') and raw.endswith('"'):
+        return raw[1:-1]
+    if raw.startswith("'") and raw.endswith("'"):
+        return raw[1:-1]
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    return raw
+
+
 @app.post("/submit")
 async def submit_job(
     request: Request,
@@ -971,9 +1001,11 @@ async def submit_job(
     if config_overrides_raw.strip():
         for line in config_overrides_raw.strip().splitlines():
             line = line.strip()
+            if not line or line.startswith("#"):
+                continue
             if ":" in line:
                 k, v = line.split(":", 1)
-                config_overrides[k.strip()] = v.strip()
+                config_overrides[k.strip()] = _parse_yaml_value(v.strip())
 
     if version:
         version_key = _get_version_config_key(project)
