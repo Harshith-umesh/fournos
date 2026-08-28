@@ -186,6 +186,19 @@ def _extract_mlflow_url(status: dict) -> str:
 
 _CACHE_BUST = str(int(datetime.now(timezone.utc).timestamp()))
 
+def _to_fjob_yaml(job_dict: dict) -> str:
+    """Reconstruct the FournosJob YAML from the job dict."""
+    spec = job_dict.get("spec", {})
+    metadata = job_dict.get("metadata", {})
+    fjob = {
+        "apiVersion": "fournos.dev/v1",
+        "kind": "FournosJob",
+        "metadata": {"name": metadata.get("name", "")},
+        "spec": spec,
+    }
+    return yaml.dump(fjob, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+
 _jinja_env.globals.update(
     format_age=_format_age,
     format_duration=_format_duration,
@@ -194,6 +207,7 @@ _jinja_env.globals.update(
     parse_task_progress=_parse_task_progress,
     build_timeline=_build_timeline,
     extract_mlflow_url=_extract_mlflow_url,
+    to_fjob_yaml=_to_fjob_yaml,
     url_for=lambda name, **kw: app.url_path_for(name, **kw),
     cache_bust=_CACHE_BUST,
 )
