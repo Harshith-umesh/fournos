@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fournos-dashboard
+spec:
+  template:
+    spec:
+      containers:
+        - name: oauth-proxy
+          image: quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256:57240081b02f882102b95dee4f2e9c491e62934a9c23d36298011473fb7fdb97
+          args:
+            - --https-address=:8443
+            - --provider=openshift
+            - --openshift-service-account=fournos-dashboard
+            - --upstream=http://localhost:8000
+            - --tls-cert=/etc/tls/private/tls.crt
+            - --tls-key=/etc/tls/private/tls.key
+            - --cookie-secret-file=/etc/oauth-proxy/cookie-secret
+            - --email-domain=*
+          ports:
+            - containerPort: 8443
+              name: https
+              protocol: TCP
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/tls/private
+              readOnly: true
+            - name: cookie-secret
+              mountPath: /etc/oauth-proxy
+              readOnly: true
+          resources:
+            requests:
+              memory: 32Mi
+              cpu: 10m
+            limits:
+              memory: 64Mi
+              cpu: 50m
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: tls
+          secret:
+            secretName: fournos-dashboard-tls
+        - name: cookie-secret
+          secret:
+            secretName: fournos-dashboard-oauth-cookie
