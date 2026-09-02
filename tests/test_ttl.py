@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
+from kubernetes.client.exceptions import ApiException
 
 from fournos.core.constants import Phase
 from fournos.core.duration import parse_duration
@@ -30,6 +31,7 @@ from fournos.operator import _gc_expired_jobs, _get_completion_time
         ("", None),
         ("invalid", None),
         ("abc123", None),
+        ("1000000000d", None),
     ],
 )
 def test_parse_duration(value, expected):
@@ -89,11 +91,13 @@ def test_set_terminal_phase_sets_completion_time():
     assert patch.status["completionTime"]
 
 
-def test_set_terminal_phase_rejects_non_terminal():
+def test_set_terminal_phase_non_terminal_fails_job():
     patch = _Patch()
-    with pytest.raises(ValueError, match="not a terminal phase"):
-        set_terminal_phase(patch, Phase.RUNNING, "nope")
-    assert patch.status == {}
+    set_terminal_phase(patch, Phase.RUNNING, "nope")
+    assert patch.status["phase"] == Phase.FAILED
+    assert "nope" in patch.status["message"]
+    assert "not a terminal phase" in patch.status["message"]
+    assert patch.status["completionTime"]
 
 
 # ---------------------------------------------------------------------------
@@ -101,16 +105,31 @@ def test_set_terminal_phase_rejects_non_terminal():
 # ---------------------------------------------------------------------------
 
 
-def _make_terminal_job(name, phase, ttl, completed_at):
+def _make_terminal_job(name, phase, ttl, completed_at, resource_version="1"):
     """Build a minimal FournosJob dict in a terminal phase."""
     return {
-        "metadata": {"name": name},
+        "metadata": {"name": name, "resourceVersion": resource_version},
         "spec": {"ttl": ttl},
         "status": {
             "phase": phase,
             "completionTime": completed_at,
         },
     }
+
+
+def _assert_deleted(mock_client, mock_custom, name, resource_version="1"):
+    mock_client.V1Preconditions.assert_called_with(resource_version=resource_version)
+    mock_client.V1DeleteOptions.assert_called_with(
+        preconditions=mock_client.V1Preconditions.return_value
+    )
+    mock_custom.delete_namespaced_custom_object.assert_called_once_with(
+        "fournos.dev",
+        "v1",
+        "test-ns",
+        "fournosjobs",
+        name,
+        body=mock_client.V1DeleteOptions.return_value,
+    )
 
 
 @patch("fournos.operator.client")
@@ -146,9 +165,7 @@ def test_gc_expired_jobs_deletes_expired(mock_settings, mock_client):
 
     _gc_expired_jobs()
 
-    mock_custom.delete_namespaced_custom_object.assert_called_once_with(
-        "fournos.dev", "v1", "test-ns", "fournosjobs", "old-job"
-    )
+    _assert_deleted(mock_client, mock_custom, "old-job")
 
 
 @patch("fournos.operator.client")
@@ -190,9 +207,7 @@ def test_gc_honors_ttl_patched_onto_already_completed_job(mock_settings, mock_cl
 
     _gc_expired_jobs()
 
-    mock_custom.delete_namespaced_custom_object.assert_called_once_with(
-        "fournos.dev", "v1", "test-ns", "fournosjobs", "patched-ttl"
-    )
+    _assert_deleted(mock_client, mock_custom, "patched-ttl")
 
 
 @patch("fournos.operator.client")
@@ -209,3 +224,28 @@ def test_gc_expired_jobs_no_deletions_when_none_expired(mock_settings, mock_clie
     _gc_expired_jobs()
 
     mock_custom.delete_namespaced_custom_object.assert_not_called()
+
+
+@patch("fournos.operator.client")
+@patch("fournos.operator.settings")
+@patch("fournos.operator.logger")
+def test_gc_skips_delete_on_resource_version_conflict(
+    mock_logger, mock_settings, mock_client
+):
+    mock_settings.workload_namespace = "test-ns"
+
+    job = _make_terminal_job("racy-job", "Succeeded", "1h", "2020-01-01T00:00:00Z")
+
+    mock_custom = MagicMock()
+    mock_client.CustomObjectsApi.return_value = mock_custom
+    mock_custom.list_namespaced_custom_object.return_value = {"items": [job]}
+    mock_client.exceptions.ApiException = ApiException
+    mock_custom.delete_namespaced_custom_object.side_effect = ApiException(
+        status=409, reason="Conflict"
+    )
+
+    _gc_expired_jobs()
+
+    mock_custom.delete_namespaced_custom_object.assert_called_once()
+    mock_logger.error.assert_not_called()
+    mock_logger.debug.assert_called()

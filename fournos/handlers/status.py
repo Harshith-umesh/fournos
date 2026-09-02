@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import datetime
+import logging
 
-from fournos.core.constants import TERMINAL_PHASES
+from fournos.core.constants import TERMINAL_PHASES, Phase
 
 CRD_GROUP = "fournos.dev"
 CRD_VERSION = "v1"
@@ -12,6 +13,8 @@ CRD_VERSION = "v1"
 COND_RESOLVED = "Resolved"
 COND_WORKLOAD_ADMITTED = "WorkloadAdmitted"
 COND_PIPELINE_RUN_READY = "PipelineRunReady"
+
+logger = logging.getLogger(__name__)
 
 
 def owner_ref(body: dict) -> dict:
@@ -65,7 +68,9 @@ def set_condition(
 def set_terminal_phase(patch, phase: str, message: str) -> None:
     """Set phase, message, and completionTime for a terminal transition."""
     if phase not in TERMINAL_PHASES:
-        raise ValueError(f"phase {phase!r} is not a terminal phase")
+        logger.error("set_terminal_phase called with non-terminal phase %r", phase)
+        message = f"{message} (internal error: {phase!r} is not a terminal phase)"
+        phase = Phase.FAILED
     patch.status["phase"] = phase
     patch.status["message"] = message
     patch.status["completionTime"] = utcnow()

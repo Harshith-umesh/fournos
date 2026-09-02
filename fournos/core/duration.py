@@ -22,9 +22,11 @@ def parse_duration(value: str) -> timedelta | None:
     if not m or not any(m.groups()):
         return None
 
-    days = int(m.group(1) or 0)
-    hours = int(m.group(2) or 0)
-    minutes = int(m.group(3) or 0)
-    seconds = int(m.group(4) or 0)
-
-    return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+    try:
+        days = int(m.group(1) or 0)
+        hours = int(m.group(2) or 0)
+        minutes = int(m.group(3) or 0)
+        seconds = int(m.group(4) or 0)
+        return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+    except (ValueError, OverflowError):
+        return None

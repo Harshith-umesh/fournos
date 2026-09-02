@@ -232,6 +232,12 @@ def _gc_expired_jobs():
         if now < completion_time + ttl:
             continue
         logger.info("TTL GC: deleting expired job %s (ttl=%s)", name, ttl_raw)
+        resource_version = job["metadata"].get("resourceVersion")
+        body = None
+        if resource_version:
+            body = client.V1DeleteOptions(
+                preconditions=client.V1Preconditions(resource_version=resource_version)
+            )
         try:
             custom.delete_namespaced_custom_object(
                 "fournos.dev",
@@ -239,6 +245,10 @@ def _gc_expired_jobs():
                 settings.workload_namespace,
                 "fournosjobs",
                 name,
+                body=body,
             )
         except client.exceptions.ApiException as exc:
+            if exc.status == 409:
+                logger.debug("TTL GC: skipped job %s, resourceVersion conflict", name)
+                continue
             logger.error("TTL GC: failed to delete job %s: %s", name, exc.reason)
