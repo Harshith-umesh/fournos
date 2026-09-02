@@ -7,7 +7,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from fournos.core.constants import Phase
 from fournos.core.duration import parse_duration
+from fournos.handlers.status import set_terminal_phase
 from fournos.operator import _gc_expired_jobs, _get_completion_time
 
 # ---------------------------------------------------------------------------
@@ -51,18 +53,47 @@ def test_get_completion_time_from_status_field():
     assert result == datetime(2026, 8, 20, 10, 0, 0, tzinfo=UTC)
 
 
-def test_get_completion_time_falls_back_to_creation_timestamp():
+def test_get_completion_time_does_not_use_creation_timestamp():
     job = {
         "metadata": {"creationTimestamp": "2026-08-20T09:00:00Z"},
         "status": {"phase": "Failed"},
     }
-    result = _get_completion_time(job)
-    assert result == datetime(2026, 8, 20, 9, 0, 0, tzinfo=UTC)
+    assert _get_completion_time(job) is None
+
+
+def test_get_completion_time_none_when_not_terminal():
+    job = {
+        "status": {
+            "phase": "Running",
+            "completionTime": "2026-08-20T10:00:00Z",
+        },
+    }
+    assert _get_completion_time(job) is None
 
 
 def test_get_completion_time_no_timestamps():
     job = {"metadata": {}, "status": {"phase": "Failed"}}
     assert _get_completion_time(job) is None
+
+
+class _Patch:
+    def __init__(self):
+        self.status = {}
+
+
+def test_set_terminal_phase_sets_completion_time():
+    patch = _Patch()
+    set_terminal_phase(patch, Phase.SUCCEEDED, "done")
+    assert patch.status["phase"] == Phase.SUCCEEDED
+    assert patch.status["message"] == "done"
+    assert patch.status["completionTime"]
+
+
+def test_set_terminal_phase_rejects_non_terminal():
+    patch = _Patch()
+    with pytest.raises(ValueError, match="not a terminal phase"):
+        set_terminal_phase(patch, Phase.RUNNING, "nope")
+    assert patch.status == {}
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +148,50 @@ def test_gc_expired_jobs_deletes_expired(mock_settings, mock_client):
 
     mock_custom.delete_namespaced_custom_object.assert_called_once_with(
         "fournos.dev", "v1", "test-ns", "fournosjobs", "old-job"
+    )
+
+
+@patch("fournos.operator.client")
+@patch("fournos.operator.settings")
+def test_gc_does_not_delete_terminal_job_without_completion_time(
+    mock_settings, mock_client
+):
+    mock_settings.workload_namespace = "test-ns"
+
+    job = {
+        "metadata": {
+            "name": "no-completion",
+            "creationTimestamp": "2020-01-01T00:00:00Z",
+        },
+        "spec": {"ttl": "1h"},
+        "status": {"phase": "Failed"},
+    }
+
+    mock_custom = MagicMock()
+    mock_client.CustomObjectsApi.return_value = mock_custom
+    mock_custom.list_namespaced_custom_object.return_value = {"items": [job]}
+
+    _gc_expired_jobs()
+
+    mock_custom.delete_namespaced_custom_object.assert_not_called()
+
+
+@patch("fournos.operator.client")
+@patch("fournos.operator.settings")
+def test_gc_honors_ttl_patched_onto_already_completed_job(mock_settings, mock_client):
+    """TTL is read from the live spec, so it can be added after completion."""
+    mock_settings.workload_namespace = "test-ns"
+
+    job = _make_terminal_job("patched-ttl", "Succeeded", "1h", "2020-01-01T00:00:00Z")
+
+    mock_custom = MagicMock()
+    mock_client.CustomObjectsApi.return_value = mock_custom
+    mock_custom.list_namespaced_custom_object.return_value = {"items": [job]}
+
+    _gc_expired_jobs()
+
+    mock_custom.delete_namespaced_custom_object.assert_called_once_with(
+        "fournos.dev", "v1", "test-ns", "fournosjobs", "patched-ttl"
     )
 
 

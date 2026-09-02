@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime
 
+from fournos.core.constants import TERMINAL_PHASES
+
 CRD_GROUP = "fournos.dev"
 CRD_VERSION = "v1"
 
@@ -62,6 +64,8 @@ def set_condition(
 
 def set_terminal_phase(patch, phase: str, message: str) -> None:
     """Set phase, message, and completionTime for a terminal transition."""
+    if phase not in TERMINAL_PHASES:
+        raise ValueError(f"phase {phase!r} is not a terminal phase")
     patch.status["phase"] = phase
     patch.status["message"] = message
     patch.status["completionTime"] = utcnow()

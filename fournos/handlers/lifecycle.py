@@ -66,21 +66,22 @@ def on_create(spec, name, namespace, status, patch, body):
     scheduled_time = _parse_scheduled_time(spec)
 
     if isinstance(scheduled_time, str):
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = scheduled_time
+        set_terminal_phase(patch, Phase.FAILED, scheduled_time)
         return
 
     if cron_expr and scheduled_time is not None:
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = (
-            "'schedule' and 'scheduledStartTime' are mutually exclusive"
+        set_terminal_phase(
+            patch,
+            Phase.FAILED,
+            "'schedule' and 'scheduledStartTime' are mutually exclusive",
         )
         return
 
     if cron_expr:
         if not croniter.is_valid(cron_expr):
-            patch.status["phase"] = Phase.FAILED
-            patch.status["message"] = f"Invalid cron expression: {cron_expr}"
+            set_terminal_phase(
+                patch, Phase.FAILED, f"Invalid cron expression: {cron_expr}"
+            )
             return
         patch.status["phase"] = Phase.RECURRING
         patch.status["message"] = f"Recurring schedule: {cron_expr}"
@@ -99,14 +100,16 @@ def on_create(spec, name, namespace, status, patch, body):
     clusterless = spec.get("clusterless", False)
 
     if lock_only and not cluster:
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = "lockOnly: true requires 'cluster' to be set"
+        set_terminal_phase(
+            patch, Phase.FAILED, "lockOnly: true requires 'cluster' to be set"
+        )
         return
 
     if not lock_only and not spec.get("executionEngine"):
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = (
-            "spec.executionEngine is required for non-lockOnly jobs"
+        set_terminal_phase(
+            patch,
+            Phase.FAILED,
+            "spec.executionEngine is required for non-lockOnly jobs",
         )
         return
 
@@ -120,28 +123,28 @@ def on_create(spec, name, namespace, status, patch, body):
             ),
         ]:
             if cond:
-                patch.status["phase"] = Phase.FAILED
-                patch.status["message"] = msg
+                set_terminal_phase(patch, Phase.FAILED, msg)
                 return
         patch.status["phase"] = Phase.RESOLVING
         patch.status["message"] = "Resolving job requirements"
         return
     if exclusive and not cluster:
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = "exclusive: true requires 'cluster' to be set"
+        set_terminal_phase(
+            patch, Phase.FAILED, "exclusive: true requires 'cluster' to be set"
+        )
         return
 
     if cluster:
         try:
             known_flavors = ctx.kueue.list_flavors()
         except k8s_client.exceptions.ApiException as exc:
-            patch.status["phase"] = Phase.FAILED
-            patch.status["message"] = f"Failed to list clusters: {exc.reason}"
+            set_terminal_phase(
+                patch, Phase.FAILED, f"Failed to list clusters: {exc.reason}"
+            )
             logger.error("Job %s: list_flavors failed: %s", name, exc.reason)
             return
         if cluster not in known_flavors:
-            patch.status["phase"] = Phase.FAILED
-            patch.status["message"] = f"Cluster '{cluster}' not found"
+            set_terminal_phase(patch, Phase.FAILED, f"Cluster '{cluster}' not found")
             return
 
     if exclusive:
@@ -184,8 +187,7 @@ def reconcile_scheduled(spec, name, namespace, status, patch, body):
     """Transition from Scheduled to the normal on_create flow once the time is reached."""
     scheduled_time = _parse_scheduled_time(spec)
     if isinstance(scheduled_time, str):
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = scheduled_time
+        set_terminal_phase(patch, Phase.FAILED, scheduled_time)
         return
     if isinstance(scheduled_time, datetime) and datetime.now(UTC) < scheduled_time:
         return

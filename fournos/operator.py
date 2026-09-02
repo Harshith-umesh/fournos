@@ -181,12 +181,13 @@ def _gc_stale_resources():
 def _get_completion_time(job: dict) -> datetime | None:
     """Return the time the job entered its terminal phase.
 
-    Prefers status.completionTime (set by the operator on terminal transitions).
-    Falls back to metadata.creationTimestamp for jobs that failed at creation.
+    Reads status.completionTime, which the operator sets on terminal transitions.
+    Returns None if the job is not terminal or completionTime is missing.
     """
-    raw = job.get("status", {}).get("completionTime")
-    if not raw:
-        raw = job.get("metadata", {}).get("creationTimestamp")
+    status = job.get("status", {})
+    if status.get("phase") not in TERMINAL_PHASES:
+        return None
+    raw = status.get("completionTime")
     if not raw:
         return None
     try:
