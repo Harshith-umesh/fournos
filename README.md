@@ -88,6 +88,8 @@ oc delete FournosJob -n $FOURNOS_WORKLOAD_NAMESPACE <name>      # cleanup
 | `spec.secretRefs` | no | Vault-synced K8s Secret names (prefixed with `vault-`) to mount into the pipeline. Populated by the execution engine during the Resolving phase. The operator validates each name in `FOURNOS_SECRETS_NAMESPACE`, copies the secrets into the operator namespace, and mounts them as a projected volume at `/var/run/secrets/fournos/<entry-name>/`. |
 | `spec.exclusive` | no (default `true`) | If `true`, locks the target cluster so no other FournosJob can run there. Requires `spec.cluster`. Hardware is optional — when omitted the Workload only requests cluster-slot resources for locking. |
 | `spec.clusterless` | no (default `false`) | If `true`, runs without cluster access — no kubeconfig is passed to the execution environment. Cannot be combined with `cluster` or `exclusive: true`. Hardware specifications are optional — if omitted, the job runs on hub cluster resources without Kueue hardware scheduling. |
+| `spec.lockOnly` | no (default `false`, or `true` if `lockUntil` is set) | Sentinel lock job: holds cluster-slot quota without running a pipeline. Implies `exclusive: true` and requires `cluster`. The job stays `Admitted` until deleted, shut down, or (with `lockUntil`) until it auto-expires. If omitted, a bare `lockUntil` is enough to imply `lockOnly: true` — set `lockOnly: false` explicitly to reject a stray `lockUntil` instead. |
+| `spec.lockUntil` | no | ISO 8601 UTC timestamp (e.g. `2026-08-23T22:00:00Z`) at which the lock is released automatically. Implies `lockOnly: true` if `lockOnly` is omitted. Omit `lockUntil` to hold the lock indefinitely. |
 | `spec.scheduledStartTime` | no | ISO 8601 UTC timestamp (e.g. `2026-08-18T15:00:00Z`). When set, the job stays in `Scheduled` phase until this time, then proceeds to `Resolving`. Mutually exclusive with `schedule`. |
 | `spec.schedule` | no | Cron expression for recurring execution (e.g. `0 20 * * *`). The job enters `Recurring` phase and the operator creates child FournosJob CRs on each cron tick, labeled with `fournos.dev/recurring-parent`. Mutually exclusive with `scheduledStartTime`. |
 | `spec.shutdown` | no | Shutdown action: `Stop` cancels gracefully (Tekton `CancelledRunFinally` — runs `finally` tasks); `Terminate` cancels immediately (Tekton `Cancelled` — skips `finally` tasks). Both wait for the PipelineRun to finish before releasing Kueue quota. |
@@ -228,6 +230,34 @@ To stop recurring execution, delete the parent job.
 **Restrictions:**
 - `scheduledStartTime` and `schedule` are mutually exclusive
 - Invalid cron expressions or timestamps fail the job immediately
+
+## Temporary cluster locks
+
+To take a cluster out of scheduling for a fixed window (e.g. maintenance)
+without running any pipeline, submit a job with `lockUntil` set:
+
+```yaml
+apiVersion: fournos.dev/v1
+kind: FournosJob
+metadata:
+  name: maintenance-lock-cluster-2
+spec:
+  cluster: cluster-2
+  exclusive: true
+  lockUntil: "2026-08-24T02:00:00Z" # 4 hours from now
+```
+
+Setting `lockUntil` alone is enough — it implies `lockOnly: true`, so you
+don't need to write both fields. The job holds all cluster-slot quota for
+`cluster-2` — Kueue blocks every other job targeting that cluster — without
+deploying anything to the cluster itself. Once `lockUntil` is reached the
+operator releases the lock automatically (equivalent to
+`spec.shutdown: Terminate`).
+
+Omit `lockUntil` and set `lockOnly: true` explicitly to hold the lock
+indefinitely until the job is deleted or shut down manually. To reject a
+stray `lockUntil` on a normal (non-lock) job, set `lockOnly: false`
+explicitly alongside it.
 
 ## Local development
 
