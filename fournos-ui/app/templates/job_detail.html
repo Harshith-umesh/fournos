@@ -146,7 +146,10 @@
 
 {% if not is_history %}
 <div class="card">
-    <div class="card-header">Logs <span id="log-pod-name" style="font-weight: 400; font-size: 12px; color: var(--text-muted);"></span></div>
+    <div class="card-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <span>Latest log issue context <span style="font-weight: 400; font-size: 12px; color: var(--text-muted);">(up to 300 lines)</span> <span id="log-pod-name" style="font-weight: 400; font-size: 12px; color: var(--text-muted);"></span></span>
+        <a id="download-logs" href="#" class="btn btn-secondary btn-sm" style="display:none; font-size:12px;">Download full logs</a>
+    </div>
     <div class="card-body" style="padding: 0;">
         <div id="log-output" class="log-viewer">
             <span style="color: var(--text-muted);">Click "View logs" on a pod above to see its output.</span>
@@ -167,45 +170,71 @@ function cancelJob(jobName) {
         .catch(err => { alert('Failed to cancel: ' + err); });
 }
 
+function createLogLine(line, isIssue) {
+    const span = document.createElement('span');
+    span.className = 'log-line';
+    if (line.startsWith('ERROR:') || line.startsWith('<error>'))
+        span.classList.add('log-error');
+    else if (line.startsWith('WARN') || line.startsWith('WARNING'))
+        span.classList.add('log-warn');
+    else if (line.startsWith('INFO:'))
+        span.classList.add('log-info');
+    else if (line.startsWith('~~ TASK:'))
+        span.classList.add('log-task');
+    else if (line.startsWith('| <command>') || line.startsWith('== command =='))
+        span.classList.add('log-command');
+    else if (line.startsWith('===='))
+        span.classList.add('log-separator');
+    if (isIssue) span.classList.add('latest-log-issue');
+    span.textContent = line + '\n';
+    return span;
+}
+
+function renderLogContext(event, logOutput) {
+    const payload = JSON.parse(event.data);
+    const fragment = document.createDocumentFragment();
+    payload.lines.forEach(function(line, index) {
+        fragment.appendChild(createLogLine(line, index === payload.issue_index));
+    });
+    logOutput.replaceChildren(fragment);
+    const issueLine = logOutput.querySelector('.latest-log-issue');
+    if (issueLine) issueLine.scrollIntoView({block: 'center', inline: 'nearest'});
+}
+
 function loadLogs(podName, source) {
     const logOutput = document.getElementById('log-output');
     const podLabel = document.getElementById('log-pod-name');
+    const downloadLink = document.getElementById('download-logs');
     podLabel.textContent = '- ' + podName;
-    logOutput.innerHTML = '<span style="color: var(--text-muted);">Loading...</span>';
+    logOutput.innerHTML = '<span style="color: var(--text-muted);">Waiting for the latest error or warning context...</span>';
+    downloadLink.href = '/api/jobs/{{ job.metadata.name | urlencode }}/logs/' + encodeURIComponent(podName) + '/download';
+    downloadLink.style.display = 'inline-flex';
 
     if (currentSource) { currentSource.close(); currentSource = null; }
 
-    const url = '/api/jobs/{{ job.metadata.name }}/logs/' + podName + '?source=' + source;
+    const url = '/api/jobs/{{ job.metadata.name | urlencode }}/logs/' + encodeURIComponent(podName) + '?source=' + encodeURIComponent(source);
     const evtSource = new EventSource(url);
     currentSource = evtSource;
-    logOutput.innerHTML = '';
 
-    evtSource.onmessage = function(event) {
-        const line = event.data;
-        const span = document.createElement('span');
-        span.className = 'log-line';
+    evtSource.addEventListener('context', function(event) {
+        try {
+            renderLogContext(event, logOutput);
+        } catch (err) {
+            logOutput.innerHTML = '<span class="log-error">Unable to render log context.</span>';
+        }
+    });
 
-        if (line.startsWith('ERROR:') || line.startsWith('<error>'))
-            span.classList.add('log-error');
-        else if (line.startsWith('WARN') || line.startsWith('WARNING'))
-            span.classList.add('log-warn');
-        else if (line.startsWith('INFO:'))
-            span.classList.add('log-info');
-        else if (line.startsWith('~~ TASK:'))
-            span.classList.add('log-task');
-        else if (line.startsWith('| <command>') || line.startsWith('== command =='))
-            span.classList.add('log-command');
-        else if (line.startsWith('===='))
-            span.classList.add('log-separator');
-
-        span.textContent = line + '\n';
-        logOutput.appendChild(span);
-        logOutput.scrollTop = logOutput.scrollHeight;
-    };
+    evtSource.addEventListener('complete', function(event) {
+        if (event.data === 'none') {
+            logOutput.innerHTML = '<span style="color: var(--text-muted);">No errors or warnings found in this pod.</span>';
+        }
+        evtSource.close();
+        if (currentSource === evtSource) currentSource = null;
+    });
 
     evtSource.onerror = function() {
         evtSource.close();
-        currentSource = null;
+        if (currentSource === evtSource) currentSource = null;
     };
 }
 

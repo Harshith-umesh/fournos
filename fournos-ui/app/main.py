@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
+from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +14,7 @@ from typing import Any
 
 import yaml
 from fastapi import FastAPI, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
@@ -514,9 +516,38 @@ async def delete_history_job(job_name: str):
     return {"status": "ok"}
 
 
+_LOG_ISSUE_RE = re.compile(r"\b(?:error|warning|warn)\b", re.IGNORECASE)
+_LOG_DECORATION_RE = re.compile(
+    r"^\s*(?:error|warning|warn)?\s*:?\s*[-=*_]{3,}\s*$",
+    re.IGNORECASE,
+)
+_LOG_CONTEXT_LINES = 300
+_LOG_CONTEXT_HISTORY = _LOG_CONTEXT_LINES - 1
+_LOG_CONTEXT_AFTER = (_LOG_CONTEXT_LINES - 1) // 2
+
+
+def _is_log_issue(line: str) -> bool:
+    """Return whether a log line contains an error or warning marker."""
+    stripped = line.strip()
+    if not stripped or not _LOG_ISSUE_RE.search(stripped):
+        return False
+    if _LOG_DECORATION_RE.fullmatch(stripped):
+        return False
+
+    # Ignore empty ``ERROR:``/``WARNING:`` prefixes as well as separator-only
+    # lines, so a decorative footer cannot hide the useful final error.
+    issue_text = re.sub(
+        r"^\s*(?:error|warning|warn)\s*:?\s*",
+        "",
+        stripped,
+        flags=re.IGNORECASE,
+    ).strip()
+    return bool(issue_text) and not re.fullmatch(r"[-=*_]{3,}", issue_text)
+
+
 @app.get("/api/jobs/{job_name}/logs/{pod_name}")
 async def stream_logs(job_name: str, pod_name: str):
-    """Stream or fetch pod logs via SSE."""
+    """Stream a bounded context window around the latest pod warning/error."""
     job_pods = await asyncio.to_thread(k8s_client.list_pods_for_job, job_name)
     pod_map = {p["name"]: p for p in job_pods}
     if pod_name not in pod_map:
@@ -527,32 +558,121 @@ async def stream_logs(job_name: str, pod_name: str):
 
     async def generate():
         stop = asyncio.Event()
-        queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=64)
+        # Keep one pending context window plus the end sentinel. The full log
+        # remains available through the separate download endpoint.
+        queue: asyncio.Queue[tuple[list[str], int] | None] = asyncio.Queue(maxsize=2)
         loop = asyncio.get_event_loop()
 
+        def _publish_latest(context: tuple[list[str], int]) -> None:
+            while True:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            queue.put_nowait(context)
+
+        def _finish() -> None:
+            queue.put_nowait(None)
+
         def _reader():
+            recent_lines: deque[str] = deque(maxlen=_LOG_CONTEXT_HISTORY)
+            current_issue: str | None = None
+            current_before: list[str] = []
+            current_after: list[str] = []
+
+            def _build_context() -> tuple[list[str], int] | None:
+                if current_issue is None:
+                    return None
+                after = current_after[:_LOG_CONTEXT_AFTER]
+                before_limit = _LOG_CONTEXT_LINES - 1 - len(after)
+                before = current_before[-before_limit:] if before_limit else []
+                return before + [current_issue] + after, len(before)
+
+            def _publish_context() -> None:
+                context = _build_context()
+                if context is not None:
+                    loop.call_soon_threadsafe(
+                        _publish_latest,
+                        context,
+                    )
+
             try:
                 for line in k8s_client.read_pod_log(pod_name, follow=is_running):
                     if stop.is_set():
                         break
-                    try:
-                        loop.call_soon_threadsafe(queue.put_nowait, line)
-                    except asyncio.QueueFull:
-                        pass
+                    if _is_log_issue(line):
+                        current_issue = line
+                        current_before = list(recent_lines)
+                        current_after = []
+                        if is_running:
+                            _publish_context()
+                    elif current_issue is not None:
+                        if len(current_after) < _LOG_CONTEXT_AFTER:
+                            current_after.append(line)
+                            if is_running and (
+                                len(current_after) % 25 == 0
+                                or len(current_after) == _LOG_CONTEXT_AFTER
+                            ):
+                                _publish_context()
+                    recent_lines.append(line)
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
+                _publish_context()
+                loop.call_soon_threadsafe(_finish)
 
-        task = asyncio.get_event_loop().run_in_executor(None, _reader)
+        loop.run_in_executor(None, _reader)
+        latest_context = None
         try:
             while True:
-                line = await queue.get()
-                if line is None:
+                context = await queue.get()
+                if context is None:
                     break
-                yield f"data: {line}\n\n"
+                latest_context = context
+                if is_running:
+                    lines, issue_index = context
+                    payload = json.dumps(
+                        {"lines": lines, "issue_index": issue_index},
+                        ensure_ascii=False,
+                    )
+                    yield f"event: context\ndata: {payload}\n\n"
+
+            if not is_running and latest_context is not None:
+                lines, issue_index = latest_context
+                payload = json.dumps(
+                    {"lines": lines, "issue_index": issue_index},
+                    ensure_ascii=False,
+                )
+                yield f"event: context\ndata: {payload}\n\n"
+
+            yield f"event: complete\ndata: {'found' if latest_context else 'none'}\n\n"
         finally:
             stop.set()
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/jobs/{job_name}/logs/{pod_name}/download")
+async def download_logs(job_name: str, pod_name: str):
+    """Download the complete current log for a job pod."""
+    job_pods = await asyncio.to_thread(k8s_client.list_pods_for_job, job_name)
+    pod_map = {p["name"]: p for p in job_pods}
+    if pod_name not in pod_map:
+        raise HTTPException(status_code=404, detail="Pod not found for this job")
+
+    log_text = await asyncio.to_thread(k8s_client.read_pod_log_full, pod_name)
+    safe_job = re.sub(r"[^A-Za-z0-9._-]", "-", job_name)
+    safe_pod = re.sub(r"[^A-Za-z0-9._-]", "-", pod_name)
+    return Response(
+        content=log_text,
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="{safe_job}-{safe_pod}.log"',
+        },
+    )
 
 
 
@@ -1002,6 +1122,7 @@ async def submit_job(
     exclusive: str = Form("false"),
     config_overrides_raw: str = Form(""),
     pull_sha: str = Form(""),
+    use_latest_main: str = Form("false"),
     rhaiis_args: str = Form(""),
     rhaiis_version: str = Form(""),
     rhaiis_overrides: str = Form(""),
@@ -1046,6 +1167,21 @@ async def submit_job(
     generate_name = f"rhaiis-{cluster}-" if project == "rhaiis" else f"forge-{project}-"
 
     pull_sha = pull_sha.strip()
+    use_latest_main_bool = use_latest_main.lower() in ("true", "on", "1", "yes")
+    if project == "rhaiis":
+        if use_latest_main_bool and pull_sha:
+            raise HTTPException(
+                status_code=400,
+                detail="Choose either a pinned RHAIIS build source or latest main, not both.",
+            )
+        if not pull_sha and not use_latest_main_bool:
+            raise HTTPException(
+                status_code=400,
+                detail="RHAIIS build source is required: choose a PR, commit SHA, release tag, or latest main.",
+            )
+        if use_latest_main_bool:
+            # The Forge resolve step fetches this branch before running CI.
+            pull_sha = "main"
     env: dict[str, str] = {}
     if pull_sha:
         env["PULL_PULL_SHA"] = pull_sha
@@ -1140,11 +1276,29 @@ async def submit_cpt(request: Request):
     priority: str = payload.get("priority", "manual")
     version_label: str = payload.get("version_label", "")
     pull_sha: str = payload.get("pull_sha", "")
+    use_latest_main = payload.get("use_latest_main", False)
     overrides: dict = payload.get("overrides", {})
     engine_version: str = payload.get("engine_version", "")
 
     if not models or not workloads:
         raise HTTPException(status_code=400, detail="models and workloads are required")
+
+    if isinstance(use_latest_main, str):
+        use_latest_main = use_latest_main.lower() in ("true", "on", "1", "yes")
+    pull_sha = str(pull_sha or "").strip()
+    if use_latest_main and pull_sha:
+        raise HTTPException(
+            status_code=400,
+            detail="Choose either a pinned RHAIIS build source or latest main, not both.",
+        )
+    if not pull_sha and not use_latest_main:
+        raise HTTPException(
+            status_code=400,
+            detail="RHAIIS build source is required: provide a commit SHA, release tag, or latest main.",
+        )
+    if use_latest_main:
+        # The Forge resolve step fetches this branch before running CI.
+        pull_sha = "main"
 
     config = _rhaiis_config_cache or await asyncio.to_thread(_fetch_rhaiis_config_from_github)
     model_entries = {m["key"]: m for m in config.get("models", [])}
@@ -1481,5 +1635,3 @@ def sanitize_job_name(prefix: str) -> str:
     name = re.sub(r"[^a-z0-9-]", "-", name)
     name = re.sub(r"-+", "-", name).strip("-")
     return name[:63]
-
-

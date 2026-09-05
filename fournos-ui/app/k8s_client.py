@@ -416,9 +416,21 @@ def read_pod_log(
         kwargs["tail_lines"] = tail_lines
     try:
         if follow:
-            for line in _core_api.read_namespaced_pod_log(**kwargs, _preload_content=False).stream():
-                decoded = line.decode("utf-8", errors="replace").rstrip("\n")
-                yield decoded
+            response = _core_api.read_namespaced_pod_log(
+                **kwargs, _preload_content=False
+            )
+            buffer = ""
+            try:
+                for chunk in response.stream():
+                    buffer += chunk.decode("utf-8", errors="replace")
+                    lines = buffer.split("\n")
+                    buffer = lines.pop()
+                    for line in lines:
+                        yield line.rstrip("\r")
+                if buffer:
+                    yield buffer.rstrip("\r")
+            finally:
+                response.close()
         else:
             log_text = _core_api.read_namespaced_pod_log(**kwargs)
             for line in log_text.splitlines():

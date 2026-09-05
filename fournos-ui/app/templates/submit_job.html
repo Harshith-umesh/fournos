@@ -321,6 +321,16 @@
     accent-color: var(--accent-blue);
     cursor: pointer;
 }
+.rhaiis-warning {
+    margin-top: 10px;
+    padding: 10px 14px;
+    background: rgba(154, 103, 0, 0.08);
+    border: 1px solid rgba(154, 103, 0, 0.45);
+    border-radius: var(--radius);
+    color: #7d5600;
+    font-size: 13px;
+    line-height: 1.5;
+}
 </style>
 <div class="page-header">
     <h2>Submit Job</h2>
@@ -647,7 +657,7 @@
 
         <!-- Build Source -->
         <div class="rhaiis-card" style="position:relative">
-            <div class="rhaiis-card-header">Build Source <span style="font-weight:normal;color:var(--text-muted)">(optional)</span></div>
+            <div class="rhaiis-card-header">Build Source <span style="font-weight:normal;color:#cf222e">(required)</span></div>
             <div class="rhaiis-section">
                 <label class="rhaiis-section-label">Pull Request</label>
                 <input type="text" id="rh-pr-search" autocomplete="off" class="rhaiis-text-input" style="max-width:none"
@@ -658,8 +668,18 @@
             <div class="rhaiis-section">
                 <label class="rhaiis-section-label">Commit SHA or Release Tag</label>
                 <input type="text" name="pull_sha" id="rh-pull-sha" class="rhaiis-text-input" style="max-width:none"
-                       placeholder="e.g. 711b5b24... or v0.24.0">
-                <span class="form-hint" id="rh-pr-hint">A commit SHA, PR head SHA, or release tag. Sets PULL_PULL_SHA for forge.</span>
+                       placeholder="e.g. 711b5b24... or v0.24.0" required>
+                <span class="form-hint" id="rh-pr-hint">Choose a commit SHA, PR head SHA, or release tag. Sets PULL_PULL_SHA for Forge.</span>
+            </div>
+            <div class="rhaiis-section" style="margin-bottom:0;">
+                <label class="checkbox-label">
+                    <input type="checkbox" name="use_latest_main" id="rh-latest-main" value="true"
+                           onchange="updateRhaiisBuildSourceUI('single')">
+                    Use latest <code>main</code>
+                </label>
+                <div id="rh-latest-main-warning" class="rhaiis-warning" style="display:none;">
+                    <strong>Warning:</strong> <code>main</code> changes frequently and may include untested code or configuration changes. It can be incompatible with this pipeline or make failures harder to reproduce. Use a pinned commit or release tag for a stable run.
+                </div>
             </div>
         </div>
 
@@ -773,7 +793,7 @@ benchmarks.guidellm.fs_group: 0</pre>
 
             <!-- CPT Version & Build Source -->
             <div class="rhaiis-card">
-                <div class="rhaiis-card-header">Version & Build</div>
+                <div class="rhaiis-card-header">Version & Build <span style="font-weight:normal;color:#cf222e">(build source required)</span></div>
                 <div class="rhaiis-section">
                     <label class="rhaiis-section-label">Version Label</label>
                     <input type="text" id="cpt-version" placeholder="e.g. vLLM-0.24.0-CPT"
@@ -781,10 +801,20 @@ benchmarks.guidellm.fs_group: 0</pre>
                     <span class="form-hint">Label applied to all CPT jobs (sets tests.rhaiis.version).</span>
                 </div>
                 <div class="rhaiis-section">
-                    <label class="rhaiis-section-label">Commit SHA or Release Tag <span style="font-weight:normal;color:var(--text-muted)">(optional)</span></label>
+                    <label class="rhaiis-section-label">Commit SHA or Release Tag</label>
                     <input type="text" id="cpt-pull-sha" class="rhaiis-text-input" style="max-width:none"
                            placeholder="e.g. 711b5b24... or forge-rhaiis-v0.0.5">
-                    <span class="form-hint">Sets PULL_PULL_SHA for all CPT jobs.</span>
+                    <span class="form-hint">Required for all CPT jobs unless you explicitly choose latest <code>main</code> below.</span>
+                </div>
+                <div class="rhaiis-section" style="margin-bottom:0;">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="cpt-latest-main" value="true"
+                               onchange="updateRhaiisBuildSourceUI('cpt')">
+                        Use latest <code>main</code>
+                    </label>
+                    <div id="cpt-latest-main-warning" class="rhaiis-warning" style="display:none;">
+                        <strong>Warning:</strong> <code>main</code> changes frequently and may include untested code or configuration changes. It can be incompatible with this pipeline or make failures harder to reproduce. Use a pinned commit or release tag for a stable run.
+                    </div>
                 </div>
                 <div class="rhaiis-section" style="margin-top: 12px;">
                     <label class="rhaiis-section-label">Compare Version <span style="font-weight:normal;color:var(--text-muted)">(optional)</span></label>
@@ -876,6 +906,17 @@ function toYamlStr(v) {
 
 function validateSubmit() {
     if (_isRhaiisActive()) {
+        const latestMain = document.getElementById('rh-latest-main').checked;
+        const pullSha = document.getElementById('rh-pull-sha').value.trim();
+        if (!latestMain && !pullSha) {
+            alert('Build source is required. Choose a PR, commit SHA, release tag, or Use latest main.');
+            document.getElementById('rh-pull-sha').focus();
+            return false;
+        }
+        if (latestMain && pullSha) {
+            alert('Choose either a pinned build source or Use latest main, not both.');
+            return false;
+        }
         var memberId = document.getElementById('rh-slack-member-id').value.trim();
         if (!memberId) {
             alert('Slack Member ID is required.');
@@ -923,6 +964,30 @@ function setFormFieldsDisabled(container, disabled) {
     container.querySelectorAll('input, select, textarea').forEach(function(el) {
         el.disabled = disabled;
     });
+}
+
+function updateRhaiisBuildSourceUI(mode) {
+    const isCpt = mode === 'cpt';
+    const suffix = isCpt ? 'cpt-' : 'rh-';
+    const latest = document.getElementById(suffix + 'latest-main');
+    const sha = document.getElementById(suffix + 'pull-sha');
+    const search = isCpt ? null : document.getElementById('rh-pr-search');
+    const hint = isCpt ? null : document.getElementById('rh-pr-hint');
+    const warning = document.getElementById(suffix + 'latest-main-warning');
+    if (!latest || !sha) return;
+
+    const useLatest = latest.checked;
+    sha.required = !isCpt && !useLatest;
+    sha.disabled = useLatest;
+    if (search) search.disabled = useLatest;
+    if (useLatest) {
+        sha.value = '';
+        if (search) search.value = '';
+        if (hint) hint.textContent = 'Forge will build from the latest main branch.';
+    } else if (hint && !sha.value) {
+        hint.textContent = 'Choose a commit SHA, PR head SHA, or release tag. Sets PULL_PULL_SHA for Forge.';
+    }
+    if (warning) warning.style.display = useLatest ? '' : 'none';
 }
 
 let _allPRs = [];
@@ -1027,6 +1092,8 @@ function switchToGenericForm() {
     document.getElementById('yaml-preview-section').style.display = 'none';
     document.getElementById('submit-actions').style.display = '';
     document.getElementById('project').value = '';
+    document.getElementById('rh-latest-main').checked = false;
+    document.getElementById('cpt-latest-main').checked = false;
     hideRhaiisOptions();
 }
 
@@ -1346,6 +1413,7 @@ async function showRhaiisOptions() {
     setFormFieldsDisabled(document.getElementById('generic-form'), true);
     setFormFieldsDisabled(document.getElementById('rhaiis-form'), false);
     setFormFieldsDisabled(document.getElementById('rhaiis-cpt-form'), true);
+    updateRhaiisBuildSourceUI('single');
     document.getElementById('yaml-preview-section').style.display = '';
     document.getElementById('submit-actions').style.display = '';
 }
@@ -1377,6 +1445,8 @@ function hideRhaiisOptions() {
     document.getElementById('rh-custom-wl-concurrencies').value = '1';
     document.getElementById('rh-custom-wl-max-seconds').value = '450';
     document.getElementById('rh-custom-wl-samples').value = '';
+    document.getElementById('rh-latest-main').checked = false;
+    document.getElementById('cpt-latest-main').checked = false;
     rhaiisSelections.accelerator = '';
     rhaiisSelections.engine = '';
     rhaiisSelections.cluster = '';
@@ -1613,7 +1683,8 @@ function buildJobYaml() {
         }
     }
 
-    const pullSha = document.getElementById(isRhaiis ? 'rh-pull-sha' : 'pull_sha')?.value || '';
+    let pullSha = document.getElementById(isRhaiis ? 'rh-pull-sha' : 'pull_sha')?.value || '';
+    if (isRhaiis && document.getElementById('rh-latest-main').checked) pullSha = 'main';
 
     let yaml = '';
     yaml += 'apiVersion: fournos.dev/v1\n';
@@ -1747,6 +1818,7 @@ function switchRhaiisMode(mode) {
 
     setFormFieldsDisabled(document.getElementById('rhaiis-single-form'), mode !== 'single');
     setFormFieldsDisabled(document.getElementById('rhaiis-cpt-form'), mode !== 'cpt');
+    updateRhaiisBuildSourceUI(mode);
 
     document.getElementById('yaml-preview-section').style.display = mode === 'single' ? '' : 'none';
     document.getElementById('submit-actions').style.display = mode === 'single' ? '' : 'none';
@@ -2005,7 +2077,9 @@ function buildCptExampleYaml() {
     const owner = document.getElementById('cpt-owner').value || 'fournos-dashboard';
     const priority = document.getElementById('cpt-priority').value || 'manual';
     const version = document.getElementById('cpt-version').value;
-    const pullSha = document.getElementById('cpt-pull-sha').value;
+    let pullSha = document.getElementById('cpt-pull-sha').value.trim();
+    const useLatestMain = document.getElementById('cpt-latest-main').checked;
+    if (useLatestMain) pullSha = 'main';
     const engineVersion = document.getElementById('cpt-engine-version').value.trim();
     const compareVersion = document.getElementById('cpt-compare-version').value.trim();
     const slackTarget = document.getElementById('cpt-slack-target').value.trim();
@@ -2091,6 +2165,17 @@ async function submitCpt() {
         alert('Owner is required.');
         return;
     }
+    const useLatestMain = document.getElementById('cpt-latest-main').checked;
+    const pullSha = document.getElementById('cpt-pull-sha').value.trim();
+    if (!useLatestMain && !pullSha) {
+        alert('Build source is required. Provide a commit SHA or release tag, or choose Use latest main.');
+        document.getElementById('cpt-pull-sha').focus();
+        return;
+    }
+    if (useLatestMain && pullSha) {
+        alert('Choose either a pinned build source or Use latest main, not both.');
+        return;
+    }
 
     const pipelineKey = document.getElementById('cpt-pipeline-select').value;
     const pipelineDef = cptPipelines.find(p => p.key === pipelineKey);
@@ -2118,7 +2203,8 @@ async function submitCpt() {
                 owner: document.getElementById('cpt-owner').value.trim(),
                 priority: document.getElementById('cpt-priority').value,
                 version_label: document.getElementById('cpt-version').value.trim(),
-                pull_sha: document.getElementById('cpt-pull-sha').value.trim(),
+                pull_sha: pullSha,
+                use_latest_main: useLatestMain,
                 overrides: overrides,
                 engine_version: document.getElementById('cpt-engine-version').value.trim(),
             }),
