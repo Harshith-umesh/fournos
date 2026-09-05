@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: fournos
+  namespace: openshift-gitops
+spec:
+  project: fournos
+  ignoreDifferences:
+    - group: kueue.x-k8s.io
+      kind: ClusterQueue
+      jqPathExpressions:
+        - .spec.resourceGroups
+  source:
+    repoURL: https://github.com/openshift-psap/fournos.git
+    targetRevision: main
+    path: manifests/overlays/intlab
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: fournos-controller
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true

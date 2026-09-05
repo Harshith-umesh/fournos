@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Intlab-only objects. Controller RBAC, Deployment, OCPCI SA, and LocalQueue
+# already live under manifests/ and config/ — apply those with apply.sh
+# (same envsubst path as the Makefile). Do not apply
+# config/kueue-cluster-config.yaml here; that file has dummy cluster flavors.
+
+resources:
+  - namespaces.yaml
+  - imagestream.yaml
+  - bootstrap-flavor.yaml
+  - clusterqueue.yaml

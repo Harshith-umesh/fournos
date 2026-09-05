@@ -1,0 +1,12 @@
+# Placeholder flavor so ClusterQueue/fournos-queue satisfies Kueue's minItems=1
+# constraint. Hearth adds real flavors as kubeconfig secrets are labeled.
+# Quotas are zero so this flavor never admits work.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: intlab-bootstrap
+  labels:
+    fournos.dev/bootstrap: "true"
+spec:
+  nodeLabels:
+    fournos.dev/cluster: intlab-bootstrap

@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: fournos
+  namespace: openshift-gitops
+spec:
+  description: Intlab overlay — namespaces, Fournos ImageStream, Kueue bootstrap
+  sourceRepos:
+    - https://github.com/openshift-psap/fournos.git
+  destinations:
+    - namespace: fournos-controller
+      server: https://kubernetes.default.svc
+    - namespace: psap-automation
+      server: https://kubernetes.default.svc
+    - namespace: psap-secrets
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: kueue.x-k8s.io
+      kind: ClusterQueue
+    - group: kueue.x-k8s.io
+      kind: ResourceFlavor
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: image.openshift.io
+      kind: ImageStream

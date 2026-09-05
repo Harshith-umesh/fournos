@@ -1,0 +1,17 @@
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: fournos
+  namespace: fournos-controller
+spec:
+  lookupPolicy:
+    local: true
+  tags:
+    - name: latest
+      from:
+        kind: DockerImage
+        name: quay.io/rh_perfscale/fournos:latest
+      importPolicy:
+        scheduled: true
+      referencePolicy:
+        type: Local
