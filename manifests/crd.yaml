@@ -189,6 +189,13 @@ spec:
                     tasks). "Terminate" cancels immediately (Cancelled — skips
                     finally tasks). Both wait for the PipelineRun to finish
                     before releasing Kueue quota.
+                ttl:
+                  type: string
+                  description: >-
+                    Duration after job completion (Succeeded/Failed/Stopped)
+                    before the FournosJob CR is automatically deleted. Uses
+                    Go duration format (e.g. "12h", "30m", "7d"). When not
+                    set, the job is never auto-pruned.
             status:
               type: object
               properties:
@@ -213,6 +220,13 @@ spec:
                   type: string
                 message:
                   type: string
+                completionTime:
+                  type: string
+                  format: date-time
+                  description: >-
+                    Timestamp when the job entered a terminal phase
+                    (Succeeded/Failed/Stopped). Used by the TTL GC to
+                    determine when to delete the CR.
                 lastScheduledTime:
                   type: string
                   format: date-time

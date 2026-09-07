@@ -9,13 +9,15 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from datetime import UTC, datetime
 
 import kopf
 from kubernetes import client, config
 
 from fournos import __version__, handlers
 from fournos.core.clusters import ClusterRegistry
-from fournos.core.constants import LABEL_JOB_NAME, Phase
+from fournos.core.constants import LABEL_JOB_NAME, TERMINAL_PHASES, Phase
+from fournos.core.duration import parse_duration
 from fournos.core.kueue import KueueClient
 from fournos.core.resolve import ResolveClient
 from fournos.core.tekton import TektonClient
@@ -142,6 +144,10 @@ def _gc_loop():
             _gc_stale_resources()
         except Exception:
             logger.exception("Resource GC failed")
+        try:
+            _gc_expired_jobs()
+        except Exception:
+            logger.exception("TTL job GC failed")
 
 
 def _gc_stale_resources():
@@ -165,3 +171,84 @@ def _gc_stale_resources():
         if job_name and job_name not in job_names:
             logger.info("GC: deleting stale PipelineRun for job %s", job_name)
             ctx.tekton.delete_pipeline_run(job_name)
+
+
+# ---------------------------------------------------------------------------
+# TTL GC — delete terminal FournosJobs whose TTL has expired
+# ---------------------------------------------------------------------------
+
+
+def _get_completion_time(job: dict) -> datetime | None:
+    """Return the time the job entered its terminal phase.
+
+    Reads status.completionTime, which the operator sets on terminal transitions.
+    Returns None if the job is not terminal or completionTime is missing.
+    """
+    status = job.get("status", {})
+    if status.get("phase") not in TERMINAL_PHASES:
+        return None
+    raw = status.get("completionTime")
+    if not raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(raw)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        return ts
+    except (ValueError, TypeError):
+        return None
+
+
+def _gc_expired_jobs():
+    custom = client.CustomObjectsApi()
+    jobs = custom.list_namespaced_custom_object(
+        "fournos.dev",
+        "v1",
+        settings.workload_namespace,
+        "fournosjobs",
+    )
+
+    now = datetime.now(UTC)
+    for job in jobs.get("items", []):
+        name = job["metadata"]["name"]
+        phase = job.get("status", {}).get("phase", "")
+        if phase not in TERMINAL_PHASES:
+            continue
+
+        ttl_raw = job.get("spec", {}).get("ttl")
+        if not ttl_raw:
+            continue
+
+        ttl = parse_duration(ttl_raw)
+        if ttl is None:
+            logger.debug("TTL GC: job %s has invalid ttl %r, ignoring", name, ttl_raw)
+            continue
+
+        completion_time = _get_completion_time(job)
+        if completion_time is None:
+            logger.debug("TTL GC: job %s has ttl but no completionTime set", name)
+            continue
+
+        if now < completion_time + ttl:
+            continue
+        logger.info("TTL GC: deleting expired job %s (ttl=%s)", name, ttl_raw)
+        resource_version = job["metadata"].get("resourceVersion")
+        body = None
+        if resource_version:
+            body = client.V1DeleteOptions(
+                preconditions=client.V1Preconditions(resource_version=resource_version)
+            )
+        try:
+            custom.delete_namespaced_custom_object(
+                "fournos.dev",
+                "v1",
+                settings.workload_namespace,
+                "fournosjobs",
+                name,
+                body=body,
+            )
+        except client.exceptions.ApiException as exc:
+            if exc.status == 409:
+                logger.debug("TTL GC: skipped job %s, resourceVersion conflict", name)
+                continue
+            logger.error("TTL GC: failed to delete job %s: %s", name, exc.reason)

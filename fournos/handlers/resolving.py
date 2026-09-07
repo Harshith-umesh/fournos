@@ -21,6 +21,7 @@ from .status import (
     COND_WORKLOAD_ADMITTED,
     owner_ref,
     set_condition,
+    set_terminal_phase,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,8 +29,7 @@ logger = logging.getLogger(__name__)
 
 def _resolve_failed(patch, conditions, name, message, *, reason, cond_message=None):
     """Set phase=Failed with a Resolved=False condition."""
-    patch.status["phase"] = Phase.FAILED
-    patch.status["message"] = message
+    set_terminal_phase(patch, Phase.FAILED, message)
     set_condition(
         patch,
         conditions,

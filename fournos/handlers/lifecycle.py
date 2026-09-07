@@ -24,6 +24,7 @@ from fournos.core.constants import (
     LOCK_HOLDING_PHASES,
     Phase,
 )
+from fournos.core.duration import parse_duration
 from fournos.core.kueue import KueueClient
 from fournos.settings import settings
 from fournos.state import ctx
@@ -34,6 +35,7 @@ from .status import (
     CRD_VERSION,
     owner_ref,
     set_condition,
+    set_terminal_phase,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,30 +52,36 @@ def on_create(spec, name, namespace, status, patch, body):
 
     shutdown = spec.get("shutdown")
     if shutdown is not None:
-        patch.status["phase"] = Phase.STOPPED
-        patch.status["message"] = "Job stopped by user"
+        set_terminal_phase(patch, Phase.STOPPED, "Job stopped by user")
         logger.info("Job %s: created with shutdown=%s, skipping", name, shutdown)
+        return
+
+    ttl_raw = spec.get("ttl")
+    if ttl_raw and parse_duration(ttl_raw) is None:
+        set_terminal_phase(patch, Phase.FAILED, f"Invalid ttl value: {ttl_raw!r}")
+        logger.error("Job %s: invalid ttl %r", name, ttl_raw)
         return
 
     cron_expr = spec.get("schedule")
     try:
         scheduled_time = _parse_scheduled_time(spec)
     except ValueError as exc:
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = str(exc)
+        set_terminal_phase(patch, Phase.FAILED, str(exc))
         return
 
     if cron_expr and scheduled_time is not None:
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = (
-            "'schedule' and 'scheduledStartTime' are mutually exclusive"
+        set_terminal_phase(
+            patch,
+            Phase.FAILED,
+            "'schedule' and 'scheduledStartTime' are mutually exclusive",
         )
         return
 
     if cron_expr:
         if not croniter.is_valid(cron_expr):
-            patch.status["phase"] = Phase.FAILED
-            patch.status["message"] = f"Invalid cron expression: {cron_expr}"
+            set_terminal_phase(
+                patch, Phase.FAILED, f"Invalid cron expression: {cron_expr}"
+            )
             return
         patch.status["phase"] = Phase.RECURRING
         patch.status["message"] = f"Recurring schedule: {cron_expr}"
@@ -92,28 +100,30 @@ def on_create(spec, name, namespace, status, patch, body):
     clusterless = spec.get("clusterless", False)
 
     if lock_only and not cluster:
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = "lockOnly: true requires 'cluster' to be set"
+        set_terminal_phase(
+            patch, Phase.FAILED, "lockOnly: true requires 'cluster' to be set"
+        )
         return
 
     if spec.get("lockUntil") and not lock_only:
         # lock_only is only False here if the user explicitly wrote
         # lockOnly: false — a bare lockUntil already implies lockOnly: true.
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = "lockUntil cannot be combined with lockOnly: false"
+        set_terminal_phase(
+            patch, Phase.FAILED, "lockUntil cannot be combined with lockOnly: false"
+        )
         return
 
     try:
         parse_iso_timestamp(spec.get("lockUntil"), "lockUntil")
     except ValueError as exc:
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = str(exc)
+        set_terminal_phase(patch, Phase.FAILED, str(exc))
         return
 
     if not lock_only and not spec.get("executionEngine"):
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = (
-            "spec.executionEngine is required for non-lockOnly jobs"
+        set_terminal_phase(
+            patch,
+            Phase.FAILED,
+            "spec.executionEngine is required for non-lockOnly jobs",
         )
         return
 
@@ -127,28 +137,28 @@ def on_create(spec, name, namespace, status, patch, body):
             ),
         ]:
             if cond:
-                patch.status["phase"] = Phase.FAILED
-                patch.status["message"] = msg
+                set_terminal_phase(patch, Phase.FAILED, msg)
                 return
         patch.status["phase"] = Phase.RESOLVING
         patch.status["message"] = "Resolving job requirements"
         return
     if exclusive and not cluster:
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = "exclusive: true requires 'cluster' to be set"
+        set_terminal_phase(
+            patch, Phase.FAILED, "exclusive: true requires 'cluster' to be set"
+        )
         return
 
     if cluster:
         try:
             known_flavors = ctx.kueue.list_flavors()
         except k8s_client.exceptions.ApiException as exc:
-            patch.status["phase"] = Phase.FAILED
-            patch.status["message"] = f"Failed to list clusters: {exc.reason}"
+            set_terminal_phase(
+                patch, Phase.FAILED, f"Failed to list clusters: {exc.reason}"
+            )
             logger.error("Job %s: list_flavors failed: %s", name, exc.reason)
             return
         if cluster not in known_flavors:
-            patch.status["phase"] = Phase.FAILED
-            patch.status["message"] = f"Cluster '{cluster}' not found"
+            set_terminal_phase(patch, Phase.FAILED, f"Cluster '{cluster}' not found")
             return
 
     if exclusive:
@@ -214,8 +224,7 @@ def reconcile_scheduled(spec, name, namespace, status, patch, body):
     try:
         scheduled_time = _parse_scheduled_time(spec)
     except ValueError as exc:
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = str(exc)
+        set_terminal_phase(patch, Phase.FAILED, str(exc))
         return
     if scheduled_time is not None and datetime.now(UTC) < scheduled_time:
         return
@@ -459,8 +468,9 @@ def reconcile_pending(spec, name, status, patch, body):
     # --- Workload admitted ---
     assigned_cluster = KueueClient.get_assigned_flavor(wl)
     if not assigned_cluster:
-        patch.status["phase"] = Phase.FAILED
-        patch.status["message"] = "Workload admitted but no flavor assigned"
+        set_terminal_phase(
+            patch, Phase.FAILED, "Workload admitted but no flavor assigned"
+        )
         set_condition(
             patch,
             conditions,
