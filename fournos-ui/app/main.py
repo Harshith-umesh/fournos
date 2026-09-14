@@ -853,7 +853,11 @@ def _fetch_rhaiis_config_from_github() -> dict:
     except Exception as exc:
         logger.warning("Failed to fetch models.yaml from GitHub: %s", exc)
 
-    cluster_gpu_types: dict[str, str] = {"hera": "h200", "zeus": "h200"}
+    cluster_gpu_types: dict[str, str] = {
+        "hera": "h200",
+        "zeus": "h200",
+        "old-zeus": "h200",
+    }
     try:
         clusters_data = _github_fetch_yaml(f"{config_dir}/clusters.yaml")
         for key, val in clusters_data.items():
@@ -885,7 +889,6 @@ def _fetch_rhaiis_config_from_github() -> dict:
         logger.debug("Failed to fetch workloads.yaml: %s", exc)
 
     model_key_to_preset: dict[str, str] = {}
-    workload_key_to_preset: dict[str, str] = {}
     cpt_pipelines: list[dict] = []
 
     try:
@@ -930,6 +933,18 @@ def _fetch_rhaiis_config_from_github() -> dict:
             if not isinstance(overrides, dict):
                 continue
 
+            # These are user-selectable compound/feature presets rather than
+            # individual accelerator, model, or workload options.
+            if "extends" in overrides or any(
+                key in overrides
+                for key in (
+                    "rhaiis.engines.vllm.args.enable-prefix-caching",
+                    "rhaiis.engines.vllm.args.no-enable-prefix-caching",
+                )
+            ):
+                compound_presets.append((key, overrides))
+                continue
+
             matched_cats = [
                 cat for cat_key, cat in _CATEGORY_KEYS.items()
                 if cat_key in overrides
@@ -963,12 +978,21 @@ def _fetch_rhaiis_config_from_github() -> dict:
                 model_key_to_preset[model_key] = key
             elif "tests.rhaiis.workload_key" in overrides:
                 wk = overrides["tests.rhaiis.workload_key"]
-                entry: dict[str, Any] = {"key": key, "label": key, "overrides": dict(overrides)}
+                if not isinstance(wk, str):
+                    # Composite benchmark presets may contain several
+                    # workload keys; they are handled as quick presets.
+                    compound_presets.append((key, overrides))
+                    continue
+                entry: dict[str, Any] = {
+                    "key": key,
+                    "label": key,
+                    "workload_key": wk,
+                    "overrides": dict(overrides),
+                }
                 profile = workload_profiles.get(wk)
                 if profile:
                     entry["profile"] = profile
                 categories["workloads"].append(entry)
-                workload_key_to_preset[wk] = key
 
     _SETTINGS_KEYS = {
         "tests.rhaiis.warmup": "warmup",
@@ -988,19 +1012,26 @@ def _fetch_rhaiis_config_from_github() -> dict:
             fills["model"] = model_key_to_preset.get(mk, "")
         if "tests.rhaiis.workload_key" in overrides:
             wk = overrides["tests.rhaiis.workload_key"]
-            fills["workload"] = workload_key_to_preset.get(wk, "")
+            if isinstance(wk, str):
+                fills["workload"] = wk
         if "tests.rhaiis.version" in overrides:
             fills["version"] = overrides["tests.rhaiis.version"]
         for cfg_key, fill_key in _SETTINGS_KEYS.items():
             if cfg_key in overrides:
                 fills[fill_key] = bool(overrides[cfg_key])
 
-        categories["quick_presets"].append({
+        quick_entry = {
             "key": key,
             "label": key.replace("-", " ").replace("_", " ").title(),
             "fills": fills,
             "overrides": dict(overrides),
-        })
+        }
+        workload_keys = overrides.get("tests.rhaiis.workload_key")
+        if isinstance(workload_keys, str):
+            quick_entry["workload_keys"] = [workload_keys]
+        elif isinstance(workload_keys, list):
+            quick_entry["workload_keys"] = list(workload_keys)
+        categories["quick_presets"].append(quick_entry)
 
     engine_defaults: dict[str, str] = {}
     for ename, accel_versions in engine_images.items():

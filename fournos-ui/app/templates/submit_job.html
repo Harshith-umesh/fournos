@@ -1099,7 +1099,9 @@ function switchToGenericForm() {
 
 /* ── RHAIIS config UI ── */
 let rhaiisConfig = null;
-const rhaiisSelections = { accelerator: '', engine: '', cluster: '', model: '', workloads: [] };
+const rhaiisSelections = {
+    accelerator: '', engine: '', cluster: '', model: '', workloads: [], quickWorkloadKeys: []
+};
 
 async function loadRhaiisConfig() {
     if (rhaiisConfig) return rhaiisConfig;
@@ -1158,7 +1160,8 @@ function updateEngineCombo() {
         var hasCluster = gpuTypes.some(function(g) { return accelGpus.indexOf(g) !== -1; });
         if (!hasCluster) {
             warning.style.display = '';
-            warning.textContent = 'No ' + accel.toUpperCase() + ' GPU clusters are currently available. All clusters (Hera, Zeus) have NVIDIA H200 GPUs.';
+            var clusterNames = clusters.map(function(c) { return c.label || c.key; }).join(', ');
+            warning.textContent = 'No ' + accel.toUpperCase() + ' GPU clusters are currently available. Available clusters: ' + clusterNames + '.';
         }
     }
 
@@ -1233,6 +1236,7 @@ function renderCheckboxGroup(containerId, items, selectionKey) {
     container.innerHTML = '';
     for (const item of items) {
         const label = document.createElement('label');
+        const value = item.workload_key || item.key;
         if (item.profile) {
             label.dataset.tooltip = formatWorkloadTooltip(item.profile);
         } else if (item.overrides) {
@@ -1240,13 +1244,13 @@ function renderCheckboxGroup(containerId, items, selectionKey) {
         }
         const cb = document.createElement('input');
         cb.type = 'checkbox';
-        cb.value = item.key;
+        cb.value = value;
         cb.onchange = function() {
             if (this.checked) {
-                rhaiisSelections[selectionKey].push(item.key);
+                rhaiisSelections[selectionKey].push(value);
                 label.classList.add('checked');
             } else {
-                rhaiisSelections[selectionKey] = rhaiisSelections[selectionKey].filter(k => k !== item.key);
+                rhaiisSelections[selectionKey] = rhaiisSelections[selectionKey].filter(k => k !== value);
                 label.classList.remove('checked');
             }
             syncRhaiisArgs();
@@ -1276,10 +1280,13 @@ function renderQuickPresets(items) {
             const wasActive = this.classList.contains('active');
             container.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
             if (wasActive) {
+                rhaiisSelections.quickWorkloadKeys = [];
                 syncRhaiisArgs();
                 return;
             }
             this.classList.add('active');
+            rhaiisSelections.quickWorkloadKeys = Array.isArray(item.workload_keys)
+                ? item.workload_keys.slice() : [];
             if (item.fills) {
                 if (item.fills.model) {
                     document.getElementById('rh-model').value = item.fills.model;
@@ -1452,6 +1459,7 @@ function hideRhaiisOptions() {
     rhaiisSelections.cluster = '';
     rhaiisSelections.model = '';
     rhaiisSelections.workloads = [];
+    rhaiisSelections.quickWorkloadKeys = [];
     cptSelections.accelerator = '';
     cptSelections.engine = '';
     cptSelections.cluster = '';
@@ -1517,6 +1525,9 @@ function getRhaiisOverrides() {
 
     const benchmark = document.getElementById('rh-benchmark');
     if (benchmark) overrides['tests.rhaiis.run_benchmark'] = benchmark.checked;
+    if (rhaiisSelections.quickWorkloadKeys.length && !rhaiisSelections.workloads.length) {
+        overrides['tests.rhaiis.workload_keys'] = rhaiisSelections.quickWorkloadKeys.slice();
+    }
 
     // Conditional overrides — only send when the user provided a value.
     // NOTE: rhaiis.compare_versions.enabled does NOT exist in Forge's config
