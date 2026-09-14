@@ -606,6 +606,10 @@
                     <input type="checkbox" id="rh-benchmark" checked onchange="syncRhaiisArgs()">
                     <span>Benchmark</span>
                 </label>
+                <label class="switch-label" data-tooltip="Enable prefix caching&#10;vLLM: enable-prefix-caching&#10;SGLang: radix cache is enabled by default; off uses disable-radix-cache&#10;TRT-LLM: kv_cache_config.enable_block_reuse">
+                    <input type="checkbox" id="rh-prefix-caching" onchange="syncRhaiisArgs()">
+                    <span>Prefix Caching</span>
+                </label>
                 <label class="switch-label" data-tooltip="Run warmup requests before the benchmark&#10;tests.rhaiis.warmup&#10;&#10;Default: 200 req/s for 60 seconds">
                     <input type="checkbox" id="rh-warmup" checked onchange="syncRhaiisArgs()">
                     <span>Warmup <span style="font-size:11px; color:var(--text-muted)">(200 req/s, 60s)</span></span>
@@ -1320,6 +1324,7 @@ function renderQuickPresets(items) {
                     csv_dashboard: 'rh-csv-dashboard',
                     compare_versions: 'rh-compare-versions',
                     benchmark: 'rh-benchmark',
+                    prefix_caching: 'rh-prefix-caching',
                 };
                 for (const [fillKey, elId] of Object.entries(settingsMap)) {
                     if (fillKey in item.fills) {
@@ -1525,6 +1530,25 @@ function getRhaiisOverrides() {
 
     const benchmark = document.getElementById('rh-benchmark');
     if (benchmark) overrides['tests.rhaiis.run_benchmark'] = benchmark.checked;
+    const prefixCaching = document.getElementById('rh-prefix-caching');
+    if (prefixCaching) {
+        // Each runtime exposes prefix caching through a different setting.
+        // vLLM uses paired boolean CLI flags, SGLang disables its radix cache,
+        // and TRT-LLM controls KV block reuse in its server config.
+        const engine = rhaiisSelections.engine || 'vllm';
+        if (engine === 'sglang') {
+            // Emit false explicitly too, so the FournosJob YAML records the
+            // selected state. Forge omits false boolean CLI args, leaving the
+            // SGLang radix cache enabled.
+            overrides['rhaiis.engines.sglang.args.disable-radix-cache'] = !prefixCaching.checked;
+        } else if (engine === 'trtllm') {
+            overrides['rhaiis.engines.trtllm.trtllm_config.kv_cache_config.enable_block_reuse'] = prefixCaching.checked;
+        } else {
+            overrides[prefixCaching.checked
+                ? 'rhaiis.engines.vllm.args.enable-prefix-caching'
+                : 'rhaiis.engines.vllm.args.no-enable-prefix-caching'] = true;
+        }
+    }
     if (rhaiisSelections.quickWorkloadKeys.length && !rhaiisSelections.workloads.length) {
         overrides['tests.rhaiis.workload_keys'] = rhaiisSelections.quickWorkloadKeys.slice();
     }

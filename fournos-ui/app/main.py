@@ -897,6 +897,12 @@ def _fetch_rhaiis_config_from_github() -> dict:
         logger.error("Failed to list presets.d from GitHub: %s", exc)
         preset_files = []
 
+    # Prefix-cache feature presets are exposed as a Run Settings toggle rather
+    # than as standalone Quick Presets.  Keep their state so compound presets
+    # such as benchmark-multi-turn-prefix-on can fill the toggle through
+    # ``extends``.
+    prefix_cache_preset_states: dict[str, bool] = {}
+
     # First pass: categorize simple presets and detect compound ones
     compound_presets: list[tuple[str, dict]] = []
 
@@ -935,13 +941,17 @@ def _fetch_rhaiis_config_from_github() -> dict:
 
             # These are user-selectable compound/feature presets rather than
             # individual accelerator, model, or workload options.
-            if "extends" in overrides or any(
-                key in overrides
-                for key in (
-                    "rhaiis.engines.vllm.args.enable-prefix-caching",
-                    "rhaiis.engines.vllm.args.no-enable-prefix-caching",
+            if "rhaiis.engines.vllm.args.enable-prefix-caching" in overrides:
+                prefix_cache_preset_states[key] = bool(
+                    overrides["rhaiis.engines.vllm.args.enable-prefix-caching"]
                 )
-            ):
+                continue
+            if "rhaiis.engines.vllm.args.no-enable-prefix-caching" in overrides:
+                prefix_cache_preset_states[key] = not bool(
+                    overrides["rhaiis.engines.vllm.args.no-enable-prefix-caching"]
+                )
+                continue
+            if "extends" in overrides:
                 compound_presets.append((key, overrides))
                 continue
 
@@ -1019,6 +1029,29 @@ def _fetch_rhaiis_config_from_github() -> dict:
         for cfg_key, fill_key in _SETTINGS_KEYS.items():
             if cfg_key in overrides:
                 fills[fill_key] = bool(overrides[cfg_key])
+
+        # Resolve prefix-cache state from the feature preset extended by a
+        # compound preset.  This keeps the Quick Preset useful while making
+        # the actual setting visible and editable in Run Settings.
+        prefix_cache = None
+        if "rhaiis.engines.vllm.args.enable-prefix-caching" in overrides:
+            prefix_cache = bool(
+                overrides["rhaiis.engines.vllm.args.enable-prefix-caching"]
+            )
+        elif "rhaiis.engines.vllm.args.no-enable-prefix-caching" in overrides:
+            prefix_cache = not bool(
+                overrides["rhaiis.engines.vllm.args.no-enable-prefix-caching"]
+            )
+        else:
+            extends = overrides.get("extends", [])
+            if isinstance(extends, str):
+                extends = [extends]
+            for parent in extends:
+                if parent in prefix_cache_preset_states:
+                    prefix_cache = prefix_cache_preset_states[parent]
+                    break
+        if prefix_cache is not None:
+            fills["prefix_caching"] = prefix_cache
 
         quick_entry = {
             "key": key,
