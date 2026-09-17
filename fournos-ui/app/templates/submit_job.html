@@ -503,7 +503,7 @@
             <div class="rhaiis-section" id="rh-engine-version-section" style="display: none;">
                 <label class="rhaiis-section-label" id="rh-engine-version-label">Engine Version</label>
                 <input type="text" id="rh-engine-version" placeholder="e.g. 0.8.0"
-                       class="rhaiis-text-input" oninput="syncRhaiisArgs()">
+                       class="rhaiis-text-input" oninput="markEngineVersionManual(this); syncRhaiisArgs()">
                 <span class="form-hint" id="rh-engine-version-hint"></span>
             </div>
             <div id="rh-combo-warning" style="display:none; padding:10px 14px; background:rgba(207,34,46,0.08); border:1px solid #cf222e; border-radius:var(--radius); color:#cf222e; font-size:13px; font-weight:600; margin-top:8px;"></div>
@@ -610,13 +610,13 @@
                     <input type="checkbox" id="rh-prefix-caching" onchange="syncRhaiisArgs()">
                     <span>Prefix Caching</span>
                 </label>
-                <label class="switch-label" data-tooltip="Run warmup requests before the benchmark&#10;tests.rhaiis.warmup&#10;&#10;Default: 200 req/s for 60 seconds">
+                <label class="switch-label" data-tooltip="Run warmup requests before the benchmark&#10;tests.rhaiis.warmup&#10;&#10;Default: concurrency 200 for 60 seconds">
                     <input type="checkbox" id="rh-warmup" checked onchange="syncRhaiisArgs()">
-                    <span>Warmup <span style="font-size:11px; color:var(--text-muted)">(200 req/s, 60s)</span></span>
+                    <span>Warmup <span style="font-size:11px; color:var(--text-muted)">(200 concurrency, 60s)</span></span>
                 </label>
-                <label class="switch-label" data-tooltip="Collect PyTorch profiler traces&#10;rhaiis.profiler.enabled&#10;&#10;Default: 200 req/s for 200 seconds">
+                <label class="switch-label" data-tooltip="Collect PyTorch profiler traces&#10;rhaiis.profiler.enabled&#10;&#10;Default: concurrency 200 for 200 seconds">
                     <input type="checkbox" id="rh-profiler" onchange="syncRhaiisArgs()">
-                    <span>Profiler <span style="font-size:11px; color:var(--text-muted)">(200 req/s, 200s)</span></span>
+                    <span>Profiler <span style="font-size:11px; color:var(--text-muted)">(200 concurrency, 200s)</span></span>
                 </label>
                 <label class="switch-label" data-tooltip="Slack notifications are always enabled for single jobs&#10;tests.rhaiis.slack_notify_always"
                        onclick="event.preventDefault()">
@@ -672,8 +672,17 @@
             <div class="rhaiis-section">
                 <label class="rhaiis-section-label">Commit SHA or Release Tag</label>
                 <input type="text" name="pull_sha" id="rh-pull-sha" class="rhaiis-text-input" style="max-width:none"
-                       placeholder="e.g. 711b5b24... or v0.24.0" required>
+                       placeholder="e.g. 711b5b24... or v0.24.0" required
+                       oninput="clearReleaseSelection('single')">
                 <span class="form-hint" id="rh-pr-hint">Choose a commit SHA, PR head SHA, or release tag. Sets PULL_PULL_SHA for Forge.</span>
+            </div>
+            <div class="rhaiis-section">
+                <label class="rhaiis-section-label" for="rh-release-tag">Available Forge release tags</label>
+                <select id="rh-release-tag" class="rhaiis-select" style="max-width:none"
+                        onchange="selectReleaseTag('single')">
+                    <option value="">Loading releases...</option>
+                </select>
+                <span class="form-hint">Select a published release to use its tag as PULL_PULL_SHA.</span>
             </div>
             <div class="rhaiis-section" style="margin-bottom:0;">
                 <label class="checkbox-label">
@@ -698,6 +707,7 @@
                     <pre style="margin:8px 0 0; padding:12px 14px; background:linear-gradient(135deg, rgba(31,111,235,0.04), rgba(56,139,253,0.06)); border:1px solid rgba(31,111,235,0.15); border-radius:6px; font-size:12px; line-height:1.7; white-space:pre; font-family:'SF Mono',Monaco,Consolas,monospace; overflow-x:auto; color:var(--text-primary);">
 # Engine / vLLM args
 rhaiis.engines.vllm.images.nvidia: vllm/vllm-openai:v0.24.0
+rhaiis.engines.vllm.images.amd: vllm/vllm-openai-rocm:v0.26.0
 rhaiis.engines.vllm.args.tensor-parallel-size: 1
 rhaiis.engines.vllm.args.max-model-len: 4096
 rhaiis.engines.vllm.args.kv-cache-dtype: fp8
@@ -779,7 +789,7 @@ benchmarks.guidellm.fs_group: 0</pre>
                 <div class="rhaiis-section" id="cpt-engine-version-section" style="display: none;">
                     <label class="rhaiis-section-label" id="cpt-engine-version-label">Engine Version</label>
                     <input type="text" id="cpt-engine-version" placeholder="e.g. vllm/vllm-openai:v0.24.0"
-                           class="rhaiis-text-input">
+                           class="rhaiis-text-input" oninput="markEngineVersionManual(this)">
                     <span class="form-hint" id="cpt-engine-version-hint"></span>
                 </div>
                 <div class="rhaiis-section">
@@ -807,8 +817,17 @@ benchmarks.guidellm.fs_group: 0</pre>
                 <div class="rhaiis-section">
                     <label class="rhaiis-section-label">Commit SHA or Release Tag</label>
                     <input type="text" id="cpt-pull-sha" class="rhaiis-text-input" style="max-width:none"
-                           placeholder="e.g. 711b5b24... or forge-rhaiis-v0.0.5">
+                           placeholder="e.g. 711b5b24... or forge-rhaiis-v0.0.5"
+                           oninput="clearReleaseSelection('cpt')">
                     <span class="form-hint">Required for all CPT jobs unless you explicitly choose latest <code>main</code> below.</span>
+                </div>
+                <div class="rhaiis-section">
+                    <label class="rhaiis-section-label" for="cpt-release-tag">Available Forge release tags</label>
+                    <select id="cpt-release-tag" class="rhaiis-select" style="max-width:none"
+                            onchange="selectReleaseTag('cpt')">
+                        <option value="">Loading releases...</option>
+                    </select>
+                    <span class="form-hint">Select a published release to use its tag as PULL_PULL_SHA.</span>
                 </div>
                 <div class="rhaiis-section" style="margin-bottom:0;">
                     <label class="checkbox-label">
@@ -975,6 +994,7 @@ function updateRhaiisBuildSourceUI(mode) {
     const suffix = isCpt ? 'cpt-' : 'rh-';
     const latest = document.getElementById(suffix + 'latest-main');
     const sha = document.getElementById(suffix + 'pull-sha');
+    const release = document.getElementById(suffix + 'release-tag');
     const search = isCpt ? null : document.getElementById('rh-pr-search');
     const hint = isCpt ? null : document.getElementById('rh-pr-hint');
     const warning = document.getElementById(suffix + 'latest-main-warning');
@@ -983,9 +1003,11 @@ function updateRhaiisBuildSourceUI(mode) {
     const useLatest = latest.checked;
     sha.required = !isCpt && !useLatest;
     sha.disabled = useLatest;
+    if (release) release.disabled = useLatest;
     if (search) search.disabled = useLatest;
     if (useLatest) {
         sha.value = '';
+        if (release) release.value = '';
         if (search) search.value = '';
         if (hint) hint.textContent = 'Forge will build from the latest main branch.';
     } else if (hint && !sha.value) {
@@ -995,6 +1017,7 @@ function updateRhaiisBuildSourceUI(mode) {
 }
 
 let _allPRs = [];
+let _allReleases = [];
 
 async function loadOpenPRs() {
     const hint = document.getElementById('pr-hint');
@@ -1005,6 +1028,52 @@ async function loadOpenPRs() {
         hint.textContent = _allPRs.length + ' open PR(s) loaded from Forge repo.';
     } catch (err) {
         hint.textContent = 'Could not load PRs -- you can still paste a SHA manually.';
+    }
+}
+
+async function loadReleases() {
+    try {
+        const resp = await fetch('/api/github/releases');
+        if (!resp.ok) throw new Error('Failed to fetch releases');
+        _allReleases = await resp.json();
+        renderReleaseOptions('rh-release-tag');
+        renderReleaseOptions('cpt-release-tag');
+    } catch (err) {
+        ['rh-release-tag', 'cpt-release-tag'].forEach(function(id) {
+            const select = document.getElementById(id);
+            if (!select) return;
+            select.innerHTML = '';
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = 'Releases unavailable — enter a tag manually';
+            select.appendChild(option);
+        });
+    }
+}
+
+function _releaseLabel(release) {
+    const name = release.name && release.name !== release.tag_name
+        ? ' — ' + release.name
+        : '';
+    const prerelease = release.prerelease ? ' [pre-release]' : '';
+    return release.tag_name + name + prerelease;
+}
+
+function renderReleaseOptions(selectId) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    select.innerHTML = '';
+    const empty = document.createElement('option');
+    empty.value = '';
+    empty.textContent = _allReleases.length
+        ? 'Select a Forge release tag...'
+        : 'No published Forge releases found';
+    select.appendChild(empty);
+    for (const release of _allReleases) {
+        const option = document.createElement('option');
+        option.value = release.tag_name;
+        option.textContent = _releaseLabel(release);
+        select.appendChild(option);
     }
 }
 
@@ -1055,6 +1124,26 @@ function renderPrDropdown(prs) {
     dd.style.display = prs.length > 0 || _allPRs.length > 0 ? '' : 'none';
 }
 
+function clearReleaseSelection(mode) {
+    const selectId = mode === 'cpt' ? 'cpt-release-tag' : 'rh-release-tag';
+    const select = document.getElementById(selectId);
+    if (select) select.value = '';
+}
+
+function selectReleaseTag(mode) {
+    const isCpt = mode === 'cpt';
+    const select = document.getElementById(isCpt ? 'cpt-release-tag' : 'rh-release-tag');
+    const shaInput = document.getElementById(isCpt ? 'cpt-pull-sha' : 'rh-pull-sha');
+    const search = isCpt ? null : document.getElementById('rh-pr-search');
+    const hint = isCpt ? null : document.getElementById('rh-pr-hint');
+    if (!select || !shaInput) return;
+    const tag = select.value;
+    if (!tag) return;
+    shaInput.value = tag;
+    if (search) search.value = '';
+    if (hint) hint.textContent = 'Forge release tag selected: ' + tag;
+}
+
 function selectPR(pr) {
     const rh = _isRhaiisActive();
     const search = document.getElementById(rh ? 'rh-pr-search' : 'pr_search');
@@ -1062,6 +1151,7 @@ function selectPR(pr) {
     const hint = document.getElementById(rh ? 'rh-pr-hint' : 'pr-hint');
     const dd = document.getElementById(rh ? 'rh-pr-dropdown' : 'pr_dropdown');
     dd.style.display = 'none';
+    if (rh) clearReleaseSelection('single');
     if (pr) {
         search.value = _prLabel(pr);
         shaInput.value = pr.head_sha;
@@ -1084,6 +1174,7 @@ document.addEventListener('click', function(e) {
 
 document.addEventListener('DOMContentLoaded', function() {
     loadOpenPRs();
+    loadReleases();
     setFormFieldsDisabled(document.getElementById('rhaiis-form'), true);
 });
 
@@ -1106,6 +1197,37 @@ let rhaiisConfig = null;
 const rhaiisSelections = {
     accelerator: '', engine: '', cluster: '', model: '', workloads: [], quickWorkloadKeys: []
 };
+
+const acceleratorGpuTypes = {
+    nvidia: ['h200', 'h100', 'a100', 'l40s', 'b200'],
+    amd: ['amd', 'mi300x', 'mi250', 'mi355x']
+};
+
+function filterClustersForAccelerator(items, accelerator) {
+    const allowedGpuTypes = acceleratorGpuTypes[accelerator];
+    if (!allowedGpuTypes) return items;
+    return items.filter(function(item) {
+        return allowedGpuTypes.indexOf(String(item.gpu_type || '').toLowerCase()) !== -1;
+    });
+}
+
+function clearRhaiisClusterSelection() {
+    rhaiisSelections.cluster = '';
+    document.getElementById('cluster').value = '';
+    document.getElementById('rh-cluster-input').value = '';
+    document.getElementById('gpu_type').value = '';
+}
+
+function refreshRhaiisClusterOptions() {
+    const clusters = (rhaiisConfig && rhaiisConfig.clusters) || [];
+    const filteredClusters = filterClustersForAccelerator(clusters, rhaiisSelections.accelerator);
+    if (rhaiisSelections.cluster && !filteredClusters.some(function(item) {
+        return item.key === rhaiisSelections.cluster;
+    })) {
+        clearRhaiisClusterSelection();
+    }
+    renderToggleGroup('rh-cluster', filteredClusters, 'cluster');
+}
 
 async function loadRhaiisConfig() {
     if (rhaiisConfig) return rhaiisConfig;
@@ -1159,8 +1281,7 @@ function updateEngineCombo() {
     if (accel) {
         var clusters = (rhaiisConfig && rhaiisConfig.clusters) || [];
         var gpuTypes = clusters.map(function(c) { return (c.gpu_type || '').toLowerCase(); });
-        var accelGpuMap = { nvidia: ['h200', 'h100', 'a100', 'l40s'], amd: ['mi300x', 'mi250'] };
-        var accelGpus = accelGpuMap[accel] || [];
+        var accelGpus = acceleratorGpuTypes[accel] || [];
         var hasCluster = gpuTypes.some(function(g) { return accelGpus.indexOf(g) !== -1; });
         if (!hasCluster) {
             warning.style.display = '';
@@ -1196,11 +1317,18 @@ function updateEngineCombo() {
     var defaults = (rhaiisConfig && rhaiisConfig.engine_defaults) || {};
     var defaultVer = defaults[combo];
     if (defaultVer) {
-        if (!versionInput.value) versionInput.value = defaultVer;
+        if (!versionInput.value || versionInput.dataset.autoValue === versionInput.value) {
+            versionInput.value = defaultVer;
+            versionInput.dataset.autoValue = defaultVer;
+        }
         versionHint.textContent = 'Default: ' + defaultVer;
     } else {
         versionHint.textContent = '';
     }
+}
+
+function markEngineVersionManual(input) {
+    if (input.dataset.autoValue !== input.value) delete input.dataset.autoValue;
 }
 
 function renderToggleGroup(containerId, items, selectionKey) {
@@ -1212,6 +1340,9 @@ function renderToggleGroup(containerId, items, selectionKey) {
         btn.className = 'toggle-btn';
         btn.textContent = item.label;
         btn.dataset.key = item.key;
+        if (rhaiisSelections[selectionKey] === item.key) {
+            btn.classList.add('active');
+        }
         if (item.overrides) {
             btn.dataset.tooltip = formatOverridesTooltip(item.overrides);
         }
@@ -1227,6 +1358,9 @@ function renderToggleGroup(containerId, items, selectionKey) {
                 }
             }
             if (selectionKey === 'accelerator' || selectionKey === 'engine') {
+                if (selectionKey === 'accelerator') {
+                    refreshRhaiisClusterOptions();
+                }
                 updateEngineCombo();
             }
             syncRhaiisArgs();
@@ -1889,15 +2023,32 @@ function renderCptToggleGroup(containerId, items, selKey) {
         btn.className = 'toggle-btn';
         btn.textContent = item.label || item.key;
         btn.dataset.key = item.key;
+        if (cptSelections[selKey] === item.key) {
+            btn.classList.add('active');
+        }
         if (item.overrides) btn.dataset.overrides = JSON.stringify(item.overrides);
         btn.onclick = function() {
             container.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             cptSelections[selKey] = item.key;
+            if (selKey === 'accelerator') {
+                refreshCptClusterOptions();
+            }
             updateCptEngineCombo();
         };
         container.appendChild(btn);
     }
+}
+
+function refreshCptClusterOptions() {
+    const clusters = (rhaiisConfig && rhaiisConfig.clusters) || [];
+    const filteredClusters = filterClustersForAccelerator(clusters, cptSelections.accelerator);
+    if (cptSelections.cluster && !filteredClusters.some(function(item) {
+        return item.key === cptSelections.cluster;
+    })) {
+        cptSelections.cluster = '';
+    }
+    renderCptToggleGroup('cpt-cluster', filteredClusters, 'cluster');
 }
 
 function updateCptEngineCombo() {
@@ -1921,7 +2072,10 @@ function updateCptEngineCombo() {
     }
 
     label.textContent = e.charAt(0).toUpperCase() + e.slice(1) + ' Version';
-    input.value = defaultVer;
+    if (!input.value || input.dataset.autoValue === input.value) {
+        input.value = defaultVer;
+        input.dataset.autoValue = defaultVer;
+    }
     hint.textContent = 'Default: ' + defaultVer;
     section.style.display = '';
 }
@@ -1971,6 +2125,7 @@ function onCptPipelineChange() {
     }
 
     updateCptEngineCombo();
+    refreshCptClusterOptions();
     renderCptMatrix();
 }
 
@@ -2150,7 +2305,11 @@ function buildCptExampleYaml() {
     yaml += '  cluster: ' + cluster + '\n';
     yaml += '  priority: ' + priority + '\n';
     yaml += '  hardware:\n';
-    yaml += '    gpuType: h200\n';
+    const cptClusterEntry = (rhaiisConfig && rhaiisConfig.clusters || []).find(function(item) {
+        return item.key === cluster;
+    });
+    const cptGpuType = cptClusterEntry && cptClusterEntry.gpu_type ? cptClusterEntry.gpu_type : 'h200';
+    yaml += '    gpuType: ' + cptGpuType + '\n';
     yaml += '    gpuCount: 1\n';
     yaml += '  secretRefs:\n';
     yaml += '    - psap-forge-dashboard-s3\n';

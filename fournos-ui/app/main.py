@@ -733,6 +733,38 @@ async def github_open_prs():
         raise HTTPException(status_code=502, detail=f"GitHub API error: {exc}")
 
 
+def _fetch_github_releases() -> list[dict]:
+    """Fetch published Forge releases for the build-source selector."""
+    import urllib.request
+    import json as _json
+
+    url = f"https://api.github.com/repos/{settings.forge_github_repo}/releases?per_page=100"
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        releases = _json.loads(resp.read())
+
+    return [
+        {
+            "tag_name": release["tag_name"],
+            "name": release.get("name") or release["tag_name"],
+            "prerelease": bool(release.get("prerelease")),
+            "published_at": release.get("published_at"),
+            "html_url": release.get("html_url", ""),
+        }
+        for release in releases
+        if isinstance(release, dict) and release.get("tag_name")
+    ]
+
+
+@app.get("/api/github/releases")
+async def github_releases():
+    """Fetch published release tags from the Forge GitHub repo."""
+    try:
+        return await asyncio.to_thread(_fetch_github_releases)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"GitHub API error: {exc}")
+
+
 _RHAIIS_ORCHESTRATION = "projects/rhaiis/orchestration"
 
 
@@ -857,6 +889,11 @@ def _fetch_rhaiis_config_from_github() -> dict:
         "hera": "h200",
         "zeus": "h200",
         "old-zeus": "h200",
+        "b200": "b200",
+        # Hearth exposes the MI355X target's AMD capacity as the generic
+        # ``fournos/gpu-amd`` resource because the target does not expose a
+        # model-specific GPU product label.
+        "mi355x": "amd",
     }
     try:
         clusters_data = _github_fetch_yaml(f"{config_dir}/clusters.yaml")
@@ -1070,6 +1107,11 @@ def _fetch_rhaiis_config_from_github() -> dict:
     for ename, accel_versions in engine_images.items():
         for accel, ver in accel_versions.items():
             engine_defaults[f"{accel}_{ename}"] = ver
+
+    # The dashboard default for AMD runs is intentionally pinned here until
+    # the corresponding Forge default is updated.  This value is submitted
+    # as an explicit image override when an AMD/vLLM job is created.
+    engine_defaults["amd_vllm"] = "vllm/vllm-openai-rocm:v0.26.0"
 
     accel_keys = {e["key"] for e in categories["accelerators"]}
     engine_keys = {e["key"] for e in categories["engines"]}
