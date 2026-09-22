@@ -1263,6 +1263,7 @@ function formatWorkloadTooltip(profile) {
     if (profile.rates) lines.push('Rates: ' + profile.rates.join(', ') + ' req/s');
     if (profile.max_seconds) lines.push('Duration: ' + profile.max_seconds + 's');
     if (profile.rampup) lines.push('Rampup: ' + profile.rampup + 's');
+    if (profile.warmup) lines.push('Warmup: ' + profile.warmup + 's');
     if (profile.samples) lines.push('Samples: ' + profile.samples);
     return lines.join('\n');
 }
@@ -1976,6 +1977,7 @@ let cptSelections = { accelerator: '', engine: '', cluster: '' };
 let cptPipelines = [];
 let cptSelectedModels = [];
 let cptSelectedWorkloads = [];
+let cptDefaultWorkloads = [];
 
 function switchRhaiisMode(mode) {
     const tabs = document.querySelectorAll('.rhaiis-mode-tab');
@@ -2042,7 +2044,13 @@ function renderCptToggleGroup(containerId, items, selKey) {
 
 function refreshCptClusterOptions() {
     const clusters = (rhaiisConfig && rhaiisConfig.clusters) || [];
-    const filteredClusters = filterClustersForAccelerator(clusters, cptSelections.accelerator);
+    const pipelineKey = document.getElementById('cpt-pipeline-select').value;
+    const pipeline = cptPipelines.find(p => p.key === pipelineKey);
+    const allowedClusters = pipeline && Array.isArray(pipeline.clusters) && pipeline.clusters.length
+        ? new Set(pipeline.clusters)
+        : null;
+    const filteredClusters = filterClustersForAccelerator(clusters, cptSelections.accelerator)
+        .filter(item => !allowedClusters || allowedClusters.has(item.key));
     if (cptSelections.cluster && !filteredClusters.some(function(item) {
         return item.key === cptSelections.cluster;
     })) {
@@ -2094,7 +2102,20 @@ function onCptPipelineChange() {
 
     desc.textContent = pipeline.description;
     cptSelectedModels = [...pipeline.models];
+    cptDefaultWorkloads = [...pipeline.workloads];
     cptSelectedWorkloads = [...pipeline.workloads];
+    for (const model of cptSelectedModels) {
+        if (!model || typeof model !== 'object' || !Array.isArray(model.workloads)) continue;
+        for (const workload of model.workloads) {
+            if (!cptSelectedWorkloads.includes(workload)) cptSelectedWorkloads.push(workload);
+        }
+    }
+    const workloadOrder = ['profile1', 'profile4', 'profile5', 'profile7', 'profile6'];
+    cptSelectedWorkloads.sort(function(a, b) {
+        const ai = workloadOrder.indexOf(a);
+        const bi = workloadOrder.indexOf(b);
+        return (ai < 0 ? workloadOrder.length : ai) - (bi < 0 ? workloadOrder.length : bi);
+    });
 
     if (pipeline.engine) {
         cptSelections.engine = pipeline.engine;
@@ -2151,6 +2172,13 @@ function cptWorkloadTooltip(wlKey) {
     return wlKey + '\n' + formatWorkloadTooltip(profile);
 }
 
+function getCptModelWorkloads(model) {
+    if (model && typeof model === 'object' && Array.isArray(model.workloads)) {
+        return model.workloads;
+    }
+    return cptDefaultWorkloads;
+}
+
 function renderCptMatrix() {
     const container = document.getElementById('cpt-matrix-container');
     const card = document.getElementById('cpt-matrix-card');
@@ -2171,6 +2199,7 @@ function renderCptMatrix() {
         var mPreset = typeof m === 'string' ? m : (m.preset || m.name);
         var mOv = (typeof m === 'object' && m.overrides) ? m.overrides : {};
         var mTp = (typeof m === 'object' && m.tp) ? m.tp : null;
+        var modelWorkloads = new Set(getCptModelWorkloads(m));
         var hasOv = Object.keys(mOv).length > 0;
         var tip = cptModelTooltip(mPreset);
         if (mName !== mPreset) tip = mName + '\nPreset: ' + mPreset + '\n' + tip;
@@ -2181,7 +2210,9 @@ function renderCptMatrix() {
         if (hasOv) html += ' <span style="color:var(--accent-blue);font-size:11px" title="Has per-model overrides">*</span>';
         html += '</label></td>';
         for (const w of cptSelectedWorkloads) {
-            html += '<td><span style="color:var(--accent-green)">&#10003;</span></td>';
+            html += modelWorkloads.has(w)
+                ? '<td><span style="color:var(--accent-green)">&#10003;</span></td>'
+                : '<td><span style="color:var(--muted)">—</span></td>';
         }
         html += '</tr>';
     }
@@ -2216,10 +2247,14 @@ function updateCptMatrix() {
         const modelCb = row.querySelector('input[data-model]');
         if (!modelCb) return;
         const modelActive = activeModels.has(modelCb.dataset.model);
+        const model = cptSelectedModels.find(function(item) {
+            return getCptModelName(item) === modelCb.dataset.model;
+        });
+        const modelWorkloads = new Set(getCptModelWorkloads(model));
         const cells = row.querySelectorAll('td');
         for (let i = 1; i < cells.length; i++) {
             const wl = wlHeaders[i - 1];
-            const active = modelActive && activeWorkloads.has(wl);
+            const active = modelActive && activeWorkloads.has(wl) && modelWorkloads.has(wl);
             cells[i].innerHTML = active
                 ? '<span style="color:var(--accent-green)">&#10003;</span>'
                 : '<span style="color:var(--muted)">—</span>';
@@ -2231,7 +2266,12 @@ function updateCptSummary() {
     const summary = document.getElementById('cpt-summary');
     const models = getCptActiveModels();
     const workloads = getCptActiveWorkloads();
-    summary.textContent = models.length + ' model(s) x ' + workloads.length + ' workload profile(s) = ' + models.length + ' FournosJob(s)';
+    const executions = models.reduce(function(total, model) {
+        const selected = new Set(workloads);
+        return total + getCptModelWorkloads(model).filter(function(w) { return selected.has(w); }).length;
+    }, 0);
+    summary.textContent = models.length + ' model(s), ' + executions
+        + ' workload execution(s) = ' + models.length + ' FournosJob(s)';
 }
 
 function getCptActiveModels() {
@@ -2252,6 +2292,21 @@ function getCptActiveWorkloads() {
     return cptSelectedWorkloads.filter(w => {
         const cb = container.querySelector('input[data-wl="' + w + '"]');
         return cb && cb.checked;
+    });
+}
+
+function getCptSubmitModels() {
+    const selectedWorkloads = new Set(getCptActiveWorkloads());
+    return getCptActiveModels().map(function(model) {
+        if (typeof model === 'string') return model;
+        return {
+            ...model,
+            workloads: getCptModelWorkloads(model).filter(function(w) {
+                return selectedWorkloads.has(w);
+            }),
+        };
+    }).filter(function(model) {
+        return typeof model === 'string' || (model.workloads && model.workloads.length);
     });
 }
 
@@ -2290,6 +2345,8 @@ function buildCptExampleYaml() {
     const modelPreset = getCptModelPreset(firstModel);
     const modelOv = getCptModelOverrides(firstModel);
     const mergedOverrides = {...overrides, ...modelOv};
+    mergedOverrides['tests.rhaiis.workload_keys'] = getCptModelWorkloads(firstModel)
+        .filter(function(w) { return workloads.includes(w); });
 
     let yaml = '# Example: Job 1 of ' + models.length + ' (' + modelName + ')\n';
     if (Object.keys(modelOv).length) yaml += '# (includes per-model overrides)\n';
@@ -2310,7 +2367,13 @@ function buildCptExampleYaml() {
     });
     const cptGpuType = cptClusterEntry && cptClusterEntry.gpu_type ? cptClusterEntry.gpu_type : 'h200';
     yaml += '    gpuType: ' + cptGpuType + '\n';
-    yaml += '    gpuCount: 1\n';
+    const firstModelEntry = (rhaiisConfig && rhaiisConfig.models || []).find(function(item) {
+        return item.key === modelPreset;
+    });
+    const firstModelTp = firstModel && typeof firstModel === 'object' && firstModel.tp
+        ? firstModel.tp
+        : (firstModelEntry && firstModelEntry.gpu_count ? firstModelEntry.gpu_count : 1);
+    yaml += '    gpuCount: ' + firstModelTp + '\n';
     yaml += '  secretRefs:\n';
     yaml += '    - psap-forge-dashboard-s3\n';
     yaml += '    - psap-forge-notifications\n';
@@ -2344,7 +2407,7 @@ function toggleCptYamlPreview() {
 }
 
 async function submitCpt() {
-    const models = getCptActiveModels();
+    const models = getCptSubmitModels();
     const workloads = getCptActiveWorkloads();
 
     if (!models.length || !workloads.length) {
@@ -2390,6 +2453,7 @@ async function submitCpt() {
             body: JSON.stringify({
                 models: models,
                 workloads: workloads,
+                cpt_pipeline_key: pipelineKey,
                 accelerator: cptSelections.accelerator,
                 engine: cptSelections.engine,
                 cluster: cptSelections.cluster,
