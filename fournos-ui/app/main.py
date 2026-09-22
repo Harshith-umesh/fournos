@@ -837,21 +837,56 @@ def _parse_cpt_models(raw_models) -> list[dict]:
             suffix = parts[1] if len(parts) > 1 else ""
             entry: dict[str, Any] = {"name": m, "preset": preset, "overrides": {}}
             tp = None
+            model_workloads = None
             if isinstance(ov, dict):
-                tp = ov.pop("__tp", None)
-                entry["overrides"] = ov
+                # Copy the YAML mapping before removing CPT-only metadata.
+                # The same parsed definition may be inspected by another
+                # consumer during a config refresh.
+                model_overrides = dict(ov)
+                tp = model_overrides.pop("__tp", None)
+                model_workloads = model_overrides.pop("__workloads", None)
+                entry["overrides"] = model_overrides
             if tp is None and suffix.startswith("tp") and suffix[2:].isdigit():
                 tp = int(suffix[2:])
             entry["tp"] = tp
+            if isinstance(model_workloads, list):
+                entry["workloads"] = list(model_workloads)
             result.append(entry)
         return result
     return [{"name": m, "preset": m, "overrides": {}} for m in raw_models]
+
+
+def _parse_cpt_pipelines(data: dict) -> list[dict]:
+    """Extract CPT definitions, including target and per-model metadata."""
+    if not data.get("__cpt"):
+        return []
+
+    pipelines = []
+    for key, entry in data.items():
+        if key.startswith("__") or not isinstance(entry, dict):
+            continue
+        pipelines.append({
+            "key": key,
+            "description": entry.get("__description", ""),
+            "engine": entry.get("__engine", ""),
+            "accelerator": entry.get("__accelerator", ""),
+            "gpu_type": entry.get("__gpu_type", ""),
+            "clusters": list(entry.get("__clusters", []) or []),
+            "models": _parse_cpt_models(entry.get("__models", [])),
+            "workloads": list(entry.get("__workloads", []) or []),
+            "overrides": {
+                k: v for k, v in entry.items()
+                if not k.startswith("__")
+            },
+        })
+    return pipelines
 
 
 def _fetch_rhaiis_config_from_github() -> dict:
     """Fetch and categorize rhaiis presets from the forge GitHub repo."""
     config_dir = f"{_RHAIIS_ORCHESTRATION}/config.d"
     presets_dir = f"{_RHAIIS_ORCHESTRATION}/presets.d"
+    cpt_dir = f"{_RHAIIS_ORCHESTRATION}/cpt.d"
 
     categories: dict[str, list[dict]] = {
         "quick_presets": [],
@@ -928,11 +963,13 @@ def _fetch_rhaiis_config_from_github() -> dict:
     model_key_to_preset: dict[str, str] = {}
     cpt_pipelines: list[dict] = []
 
-    try:
-        preset_files = _github_list_yamls(presets_dir)
-    except Exception as exc:
-        logger.error("Failed to list presets.d from GitHub: %s", exc)
-        preset_files = []
+    preset_files = []
+    for config_source_dir in (presets_dir, cpt_dir):
+        try:
+            preset_files.extend(_github_list_yamls(config_source_dir))
+        except Exception as exc:
+            logger.error("Failed to list %s from GitHub: %s", config_source_dir, exc)
+    preset_files = sorted(set(preset_files))
 
     # Prefix-cache feature presets are exposed as a Run Settings toggle rather
     # than as standalone Quick Presets.  Keep their state so compound presets
@@ -951,23 +988,7 @@ def _fetch_rhaiis_config_from_github() -> dict:
             continue
 
         if data.get("__cpt"):
-            for key, entry in data.items():
-                if key.startswith("__") or not isinstance(entry, dict):
-                    continue
-                raw_models = entry.get("__models", [])
-                models_list = _parse_cpt_models(raw_models)
-                cpt_pipelines.append({
-                    "key": key,
-                    "description": entry.get("__description", ""),
-                    "engine": entry.get("__engine", ""),
-                    "accelerator": entry.get("__accelerator", ""),
-                    "models": models_list,
-                    "workloads": entry.get("__workloads", []),
-                    "overrides": {
-                        k: v for k, v in entry.items()
-                        if not k.startswith("__")
-                    },
-                })
+            cpt_pipelines.extend(_parse_cpt_pipelines(data))
             continue
 
         for key, overrides in data.items():
@@ -1126,27 +1147,17 @@ def _fetch_rhaiis_config_from_github() -> dict:
     categories["workload_profiles"] = workload_profiles
 
     if not cpt_pipelines:
-        local_dir = Path(__file__).resolve().parent.parent
-        for local_cpt in sorted(local_dir.glob("cpt*.yaml")):
+        local_dirs = [Path(__file__).resolve().parent.parent]
+        if settings.forge_repo_path:
+            local_dirs.append(Path(settings.forge_repo_path) / _RHAIIS_ORCHESTRATION / "cpt.d")
+        local_files = []
+        for local_dir in local_dirs:
+            local_files.extend(local_dir.glob("cpt*.yaml"))
+        for local_cpt in sorted(set(local_files)):
             try:
                 with open(local_cpt) as f:
                     cpt_data = yaml.safe_load(f) or {}
-                if not cpt_data.get("__cpt"):
-                    continue
-                for key, entry in cpt_data.items():
-                    if key.startswith("__") or not isinstance(entry, dict):
-                        continue
-                    raw_models = entry.get("__models", [])
-                    models_list = _parse_cpt_models(raw_models)
-                    cpt_pipelines.append({
-                        "key": key,
-                        "description": entry.get("__description", ""),
-                        "engine": entry.get("__engine", ""),
-                        "accelerator": entry.get("__accelerator", ""),
-                        "models": models_list,
-                        "workloads": entry.get("__workloads", []),
-                        "overrides": {k: v for k, v in entry.items() if not k.startswith("__")},
-                    })
+                cpt_pipelines.extend(_parse_cpt_pipelines(cpt_data))
                 logger.info("Loaded CPT pipeline(s) from local %s", local_cpt)
             except Exception as exc:
                 logger.debug("Failed to load local CPT file %s: %s", local_cpt, exc)
@@ -1372,7 +1383,7 @@ async def submit_cpt(request: Request):
     import json as _json
 
     payload = await request.json()
-    models: list[str] = payload.get("models", [])
+    models: list[Any] = payload.get("models", [])
     workloads: list[str] = payload.get("workloads", [])
     accelerator: str = payload.get("accelerator", "nvidia")
     engine: str = payload.get("engine", "vllm")
@@ -1380,6 +1391,7 @@ async def submit_cpt(request: Request):
     pipeline: str = payload.get("pipeline", "forge-full")
     owner: str = payload.get("owner", "fournos-dashboard")
     priority: str = payload.get("priority", "manual")
+    cpt_pipeline_key: str = payload.get("cpt_pipeline_key", "")
     version_label: str = payload.get("version_label", "")
     pull_sha: str = payload.get("pull_sha", "")
     use_latest_main = payload.get("use_latest_main", False)
@@ -1407,6 +1419,30 @@ async def submit_cpt(request: Request):
         pull_sha = "main"
 
     config = _rhaiis_config_cache or await asyncio.to_thread(_fetch_rhaiis_config_from_github)
+    cpt_pipeline = next(
+        (p for p in config.get("cpt_pipelines", []) if p.get("key") == cpt_pipeline_key),
+        None,
+    )
+    if cpt_pipeline_key and cpt_pipeline is None:
+        raise HTTPException(status_code=400, detail=f"Unknown CPT pipeline: {cpt_pipeline_key}")
+    if cpt_pipeline:
+        allowed_clusters = cpt_pipeline.get("clusters", [])
+        if allowed_clusters and cluster not in allowed_clusters:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cluster {cluster} is not valid for CPT pipeline {cpt_pipeline_key}; "
+                f"choose one of: {', '.join(allowed_clusters)}",
+            )
+        if cpt_pipeline.get("accelerator") and accelerator != cpt_pipeline["accelerator"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Accelerator {accelerator} is not valid for CPT pipeline {cpt_pipeline_key}",
+            )
+        if cpt_pipeline.get("engine") and engine != cpt_pipeline["engine"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Engine {engine} is not valid for CPT pipeline {cpt_pipeline_key}",
+            )
     model_entries = {m["key"]: m for m in config.get("models", [])}
     cluster_entries = {c["key"]: c for c in config.get("clusters", [])}
     gpu_type = cluster_entries.get(cluster, {}).get("gpu_type", "h200")
@@ -1427,13 +1463,21 @@ async def submit_cpt(request: Request):
         model_key = model_preset_overrides.get("tests.rhaiis.model_key", model_preset)
         cpt_tp = model_item.get("tp") if isinstance(model_item, dict) else None
         gpu_count = cpt_tp or model_entry.get("gpu_count", 1)
+        model_workloads = (
+            model_item.get("workloads")
+            if isinstance(model_item, dict) and model_item.get("workloads")
+            else workloads
+        )
 
         args = [accelerator, engine, cluster, model_preset]
 
         job_overrides: dict[str, Any] = {}
         job_overrides.update(overrides)
         job_overrides.update(per_model_overrides)
-        job_overrides["tests.rhaiis.workload_keys"] = workloads
+        if cpt_tp is not None:
+            tp_key = f"rhaiis.engines.{engine}.args.tensor-parallel-size"
+            job_overrides.setdefault(tp_key, cpt_tp)
+        job_overrides["tests.rhaiis.workload_keys"] = model_workloads
         if version_label:
             job_overrides["tests.rhaiis.version"] = version_label
         if engine_version:
