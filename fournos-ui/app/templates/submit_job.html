@@ -637,8 +637,8 @@
                 </label>
             </div>
             <div class="form-hint" style="margin-top:8px; line-height:1.5;">
-                Profile 5 (ultra-long context) is skipped by PyTorch profiling even when enabled;
-                its benchmark still runs when Benchmark is enabled.
+                When profiling is enabled, Profile 5 (ultra-long context) skips both the profiler
+                pass and warmup; its benchmark still runs when Benchmark is enabled.
             </div>
             <div id="rh-slack-member-section" class="rhaiis-section" style="margin-top: 12px;">
                 <label class="rhaiis-section-label">Slack Member ID <span style="font-weight:normal;color:#cf222e">(required)</span></label>
@@ -777,8 +777,8 @@ benchmarks.guidellm.fs_group: 0</pre>
                     </select>
                     <span class="form-hint" id="cpt-pipeline-description"></span>
                     <span class="form-hint" style="display:block; margin-top:6px; line-height:1.5;">
-                        Profile 5 (ultra-long context) is skipped by PyTorch profiling regardless of
-                        the pipeline's profiler setting; its benchmark follows the pipeline's benchmark setting.
+                        When profiling is enabled, Profile 5 (ultra-long context) skips both the
+                        profiler pass and warmup; its benchmark follows the pipeline's benchmark setting.
                     </span>
                 </div>
             </div>
