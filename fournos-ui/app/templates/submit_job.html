@@ -568,6 +568,10 @@
             <div class="rhaiis-section">
                 <label class="rhaiis-section-label">Workload Profiles</label>
                 <div class="checkbox-group" id="rh-workloads"></div>
+                <div id="rh-profile5-profiler-note" class="form-hint" style="display:none; margin-top:8px; line-height:1.5;">
+                    Profile 5 (ultra-long context) is selected. When Profiler is enabled, both the
+                    profiler pass and warmup are skipped; its benchmark still runs when Benchmark is enabled.
+                </div>
             </div>
             <div id="rh-custom-workload-section" class="rhaiis-section" style="display:none;">
                 <div class="rhaiis-row">
@@ -803,6 +807,10 @@ benchmarks.guidellm.fs_group: 0</pre>
                 <div class="rhaiis-card-header">Matrix Preview</div>
                 <div id="cpt-matrix-container"></div>
                 <div class="cpt-summary" id="cpt-summary"></div>
+                <div id="cpt-profile5-profiler-note" class="form-hint" style="display:none; margin-top:8px; line-height:1.5;">
+                    Profile 5 (ultra-long context) is selected. When profiling is enabled, both the
+                    profiler pass and warmup are skipped; its benchmark follows the pipeline's benchmark setting.
+                </div>
             </div>
 
             <!-- CPT Version & Build Source -->
@@ -1714,6 +1722,14 @@ function onTpOverrideChange() {
 }
 
 function syncRhaiisArgs() {
+    const profile5Note = document.getElementById('rh-profile5-profiler-note');
+    if (profile5Note) {
+        const selectedWorkloads = rhaiisSelections.workloads.length
+            ? rhaiisSelections.workloads
+            : rhaiisSelections.quickWorkloadKeys;
+        profile5Note.style.display = selectedWorkloads.includes('profile5') ? '' : 'none';
+    }
+
     const args = [];
     const activeQuickPreset = document.querySelector('#rh-quick-presets .toggle-btn.active');
     if (activeQuickPreset) args.push(activeQuickPreset.dataset.key);
@@ -2266,6 +2282,10 @@ function updateCptSummary() {
     const summary = document.getElementById('cpt-summary');
     const models = getCptActiveModels();
     const workloads = getCptActiveWorkloads();
+    const profile5Note = document.getElementById('cpt-profile5-profiler-note');
+    if (profile5Note) {
+        profile5Note.style.display = workloads.includes('profile5') ? '' : 'none';
+    }
     const executions = models.reduce(function(total, model) {
         const selected = new Set(workloads);
         return total + getCptModelWorkloads(model).filter(function(w) { return selected.has(w); }).length;
