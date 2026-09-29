@@ -569,8 +569,8 @@
                 <label class="rhaiis-section-label">Workload Profiles</label>
                 <div class="checkbox-group" id="rh-workloads"></div>
                 <div id="rh-profile5-profiler-note" class="form-hint" style="display:none; margin-top:8px; line-height:1.5;">
-                    Profile 5 (ultra-long context) is selected. When Profiler is enabled, both the
-                    profiler pass and warmup are skipped; its benchmark still runs when Benchmark is enabled.
+                    Profile 5 never runs PyTorch profiling or warmup. Its benchmark still runs when
+                    Benchmark is enabled.
                 </div>
             </div>
             <div id="rh-custom-workload-section" class="rhaiis-section" style="display:none;">
@@ -808,8 +808,8 @@ benchmarks.guidellm.fs_group: 0</pre>
                 <div id="cpt-matrix-container"></div>
                 <div class="cpt-summary" id="cpt-summary"></div>
                 <div id="cpt-profile5-profiler-note" class="form-hint" style="display:none; margin-top:8px; line-height:1.5;">
-                    Profile 5 (ultra-long context) is selected. When profiling is enabled, both the
-                    profiler pass and warmup are skipped; its benchmark follows the pipeline's benchmark setting.
+                    Profile 5 never runs PyTorch profiling or warmup. Its benchmark follows the
+                    pipeline's benchmark setting.
                 </div>
             </div>
 
