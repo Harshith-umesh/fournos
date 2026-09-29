@@ -204,6 +204,7 @@ All configuration is via environment variables (set in the deployment manifest):
 | `LOG_LEVEL` | Logging level | `INFO` |
 | `KUBECONFIG` | Path to kubeconfig (local dev only) | in-cluster config |
 | `FORGE_GITHUB_REPO` | GitHub `owner/repo` for PR listing | `openshift-psap/forge` |
+| `RHAIIS_CONFIG_CACHE_TTL_SECONDS` | How often the dashboard checks Forge's default-branch SHA for RHAIIS config updates | `300` (5 minutes) |
 
 ## Security
 

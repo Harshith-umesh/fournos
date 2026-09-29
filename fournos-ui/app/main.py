@@ -6,6 +6,9 @@ import asyncio
 import json
 import logging
 import re
+import time
+import urllib.parse
+import urllib.request
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -768,15 +771,21 @@ async def github_releases():
 _RHAIIS_ORCHESTRATION = "projects/rhaiis/orchestration"
 
 
-def _github_fetch_yaml(path: str) -> dict:
+def _github_fetch_yaml(path: str, ref: str | None = None) -> dict:
     """Fetch a single YAML file from the forge GitHub repo and return parsed content."""
-    import urllib.request
-    import json as _json
+    if ref:
+        raw_url = (
+            f"https://raw.githubusercontent.com/{settings.forge_github_repo}/"
+            f"{urllib.parse.quote(ref, safe='')}/{path}"
+        )
+        raw_req = urllib.request.Request(raw_url)
+        with urllib.request.urlopen(raw_req, timeout=15) as resp:
+            return yaml.safe_load(resp.read()) or {}
 
     url = f"https://api.github.com/repos/{settings.forge_github_repo}/contents/{path}"
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=15) as resp:
-        meta = _json.loads(resp.read())
+        meta = json.loads(resp.read())
 
     download_url = meta.get("download_url", "")
     if not download_url:
@@ -787,20 +796,36 @@ def _github_fetch_yaml(path: str) -> dict:
         return yaml.safe_load(resp.read()) or {}
 
 
-def _github_list_yamls(directory: str) -> list[str]:
+def _github_list_yamls(directory: str, ref: str | None = None) -> list[str]:
     """List .yaml file paths in a forge GitHub repo directory."""
-    import urllib.request
-    import json as _json
-
     url = f"https://api.github.com/repos/{settings.forge_github_repo}/contents/{directory}"
+    if ref:
+        url += "?" + urllib.parse.urlencode({"ref": ref})
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(req, timeout=15) as resp:
-        items = _json.loads(resp.read())
+        items = json.loads(resp.read())
 
     return sorted(
         item["path"] for item in items
         if isinstance(item, dict) and item.get("name", "").endswith(".yaml")
     )
+
+
+def _github_default_branch_sha() -> str:
+    """Return the current Forge default-branch SHA with one API request."""
+    url = f"https://api.github.com/repos/{settings.forge_github_repo}/commits?per_page=1"
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        commits = json.loads(resp.read())
+
+    if (
+        not isinstance(commits, list)
+        or not commits
+        or not isinstance(commits[0], dict)
+        or not commits[0].get("sha")
+    ):
+        raise RuntimeError("GitHub returned no commit for the Forge default branch")
+    return str(commits[0]["sha"])
 
 
 _CATEGORY_KEYS = {
@@ -882,7 +907,7 @@ def _parse_cpt_pipelines(data: dict) -> list[dict]:
     return pipelines
 
 
-def _fetch_rhaiis_config_from_github() -> dict:
+def _fetch_rhaiis_config_from_github(ref: str | None = None) -> dict:
     """Fetch and categorize rhaiis presets from the forge GitHub repo."""
     config_dir = f"{_RHAIIS_ORCHESTRATION}/config.d"
     presets_dir = f"{_RHAIIS_ORCHESTRATION}/presets.d"
@@ -901,7 +926,7 @@ def _fetch_rhaiis_config_from_github() -> dict:
     model_display_names: dict[str, str] = {}
     model_tp_sizes: dict[str, int] = {}
     try:
-        models_data = _github_fetch_yaml(f"{config_dir}/models.yaml")
+        models_data = _github_fetch_yaml(f"{config_dir}/models.yaml", ref=ref)
         for key, val in models_data.items():
             if isinstance(val, dict):
                 model_display_names[key] = val.get("name", key)
@@ -931,7 +956,7 @@ def _fetch_rhaiis_config_from_github() -> dict:
         "mi355x": "amd",
     }
     try:
-        clusters_data = _github_fetch_yaml(f"{config_dir}/clusters.yaml")
+        clusters_data = _github_fetch_yaml(f"{config_dir}/clusters.yaml", ref=ref)
         for key, val in clusters_data.items():
             if isinstance(val, dict):
                 gpu = val.get("gpu_type", val.get("gpuType", val.get("gpu")))
@@ -942,7 +967,7 @@ def _fetch_rhaiis_config_from_github() -> dict:
 
     engine_images: dict[str, dict[str, str]] = {}
     try:
-        rhaiis_data = _github_fetch_yaml(f"{config_dir}/rhaiis.yaml")
+        rhaiis_data = _github_fetch_yaml(f"{config_dir}/rhaiis.yaml", ref=ref)
         for ename, edata in (rhaiis_data.get("engines") or {}).items():
             if isinstance(edata, dict):
                 for accel, img in (edata.get("images") or {}).items():
@@ -953,7 +978,7 @@ def _fetch_rhaiis_config_from_github() -> dict:
 
     workload_profiles: dict[str, dict] = {}
     try:
-        workloads_data = _github_fetch_yaml(f"{config_dir}/workloads.yaml")
+        workloads_data = _github_fetch_yaml(f"{config_dir}/workloads.yaml", ref=ref)
         for wk, wv in workloads_data.items():
             if isinstance(wv, dict):
                 workload_profiles[wk] = wv
@@ -966,7 +991,7 @@ def _fetch_rhaiis_config_from_github() -> dict:
     preset_files = []
     for config_source_dir in (presets_dir, cpt_dir):
         try:
-            preset_files.extend(_github_list_yamls(config_source_dir))
+            preset_files.extend(_github_list_yamls(config_source_dir, ref=ref))
         except Exception as exc:
             logger.error("Failed to list %s from GitHub: %s", config_source_dir, exc)
     preset_files = sorted(set(preset_files))
@@ -982,7 +1007,7 @@ def _fetch_rhaiis_config_from_github() -> dict:
 
     for file_path in preset_files:
         try:
-            data = _github_fetch_yaml(file_path)
+            data = _github_fetch_yaml(file_path, ref=ref)
         except Exception as exc:
             logger.warning("Failed to fetch %s: %s", file_path, exc)
             continue
@@ -1163,38 +1188,97 @@ def _fetch_rhaiis_config_from_github() -> dict:
                 logger.debug("Failed to load local CPT file %s: %s", local_cpt, exc)
 
     categories["cpt_pipelines"] = cpt_pipelines
+    categories["forge_commit_sha"] = ref or ""
 
     return categories
 
 
 _rhaiis_config_cache: dict | None = None
+_rhaiis_config_cache_sha: str | None = None
+_rhaiis_config_cache_checked_at = 0.0
+_rhaiis_config_refresh_lock = asyncio.Lock()
+
+
+def _is_complete_rhaiis_config(config: dict) -> bool:
+    return bool(config.get("accelerators") and config.get("engines"))
+
+
+async def _load_rhaiis_config(force_refresh: bool = False) -> dict:
+    """Return cached Forge config, checking the default-branch SHA periodically."""
+    global _rhaiis_config_cache
+    global _rhaiis_config_cache_sha
+    global _rhaiis_config_cache_checked_at
+
+    ttl = max(1, settings.rhaiis_config_cache_ttl_seconds)
+    now = time.monotonic()
+    if (
+        not force_refresh
+        and _rhaiis_config_cache is not None
+        and now - _rhaiis_config_cache_checked_at < ttl
+    ):
+        return _rhaiis_config_cache
+
+    async with _rhaiis_config_refresh_lock:
+        now = time.monotonic()
+        if (
+            not force_refresh
+            and _rhaiis_config_cache is not None
+            and now - _rhaiis_config_cache_checked_at < ttl
+        ):
+            return _rhaiis_config_cache
+
+        latest_sha: str | None = None
+        try:
+            latest_sha = await asyncio.to_thread(_github_default_branch_sha)
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("Failed to check Forge default-branch SHA: %s", exc)
+            if _rhaiis_config_cache is not None and not force_refresh:
+                # Keep serving the last good config and back off before retrying.
+                _rhaiis_config_cache_checked_at = time.monotonic()
+                return _rhaiis_config_cache
+
+        if (
+            not force_refresh
+            and _rhaiis_config_cache is not None
+            and latest_sha
+            and latest_sha == _rhaiis_config_cache_sha
+        ):
+            _rhaiis_config_cache_checked_at = time.monotonic()
+            return _rhaiis_config_cache
+
+        try:
+            result = await asyncio.to_thread(_fetch_rhaiis_config_from_github, latest_sha)
+        except (OSError, ValueError, RuntimeError, yaml.YAMLError) as exc:
+            logger.warning("Failed to refresh RHAIIS config from Forge: %s", exc)
+            _rhaiis_config_cache_checked_at = time.monotonic()
+            if _rhaiis_config_cache is not None:
+                return _rhaiis_config_cache
+            raise
+
+        _rhaiis_config_cache_checked_at = time.monotonic()
+        if _is_complete_rhaiis_config(result):
+            _rhaiis_config_cache = result
+            _rhaiis_config_cache_sha = latest_sha or result.get("forge_commit_sha") or None
+            return _rhaiis_config_cache
+
+        logger.warning("rhaiis config fetch returned incomplete data — not caching")
+        return _rhaiis_config_cache if _rhaiis_config_cache is not None else result
 
 
 @app.get("/api/rhaiis-config")
 async def rhaiis_config():
     """Return categorized rhaiis preset options for the submit form."""
-    global _rhaiis_config_cache
-    if _rhaiis_config_cache is None:
-        result = await asyncio.to_thread(_fetch_rhaiis_config_from_github)
-        if result.get("accelerators") and result.get("engines"):
-            _rhaiis_config_cache = result
-        else:
-            logger.warning("rhaiis config fetch returned incomplete data — not caching")
-            return result
-    return _rhaiis_config_cache
+    return await _load_rhaiis_config()
 
 
 @app.post("/api/rhaiis-config/refresh")
 async def rhaiis_config_refresh():
     """Force-refresh the cached rhaiis config from GitHub."""
-    global _rhaiis_config_cache
-    _rhaiis_config_cache = None
-    result = await asyncio.to_thread(_fetch_rhaiis_config_from_github)
-    if result.get("accelerators") and result.get("engines"):
-        _rhaiis_config_cache = result
+    result = await _load_rhaiis_config(force_refresh=True)
     return {"status": "ok", "accelerators": len(result.get("accelerators", [])),
             "engines": len(result.get("engines", [])),
-            "models": len(result.get("models", []))}
+            "models": len(result.get("models", [])),
+            "forge_commit_sha": result.get("forge_commit_sha", "")}
 
 
 def _parse_yaml_value(raw: str) -> Any:
@@ -1418,7 +1502,7 @@ async def submit_cpt(request: Request):
         # The Forge resolve step fetches this branch before running CI.
         pull_sha = "main"
 
-    config = _rhaiis_config_cache or await asyncio.to_thread(_fetch_rhaiis_config_from_github)
+    config = await _load_rhaiis_config()
     cpt_pipeline = next(
         (p for p in config.get("cpt_pipelines", []) if p.get("key") == cpt_pipeline_key),
         None,

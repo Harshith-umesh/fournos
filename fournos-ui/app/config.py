@@ -44,6 +44,10 @@ class Settings:
         default_factory=lambda: os.environ.get("FORGE_GITHUB_REPO", "openshift-psap/forge")
     )
 
+    rhaiis_config_cache_ttl_seconds: int = field(
+        default_factory=lambda: int(os.environ.get("RHAIIS_CONFIG_CACHE_TTL_SECONDS", "300"))
+    )
+
     k8s_request_timeout_seconds: int = field(
         default_factory=lambda: int(os.environ.get("K8S_REQUEST_TIMEOUT", "30"))
     )

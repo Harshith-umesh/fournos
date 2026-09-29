@@ -776,6 +776,7 @@ benchmarks.guidellm.fs_group: 0</pre>
                         <option value="">-- Select a CPT pipeline --</option>
                     </select>
                     <span class="form-hint" id="cpt-pipeline-description"></span>
+                    <span class="form-hint">Forge configuration is checked automatically while this form is open.</span>
                 </div>
             </div>
 
@@ -1202,6 +1203,11 @@ function switchToGenericForm() {
 
 /* ── RHAIIS config UI ── */
 let rhaiisConfig = null;
+let rhaiisConfigLoadedAt = 0;
+let rhaiisConfigLoadPromise = null;
+let cptConfigRefreshTimer = null;
+const RHAIIS_CONFIG_CLIENT_TTL_MS = 120000;
+const CPT_CONFIG_AUTO_REFRESH_INTERVAL_MS = 120000;
 const rhaiisSelections = {
     accelerator: '', engine: '', cluster: '', model: '', workloads: [], quickWorkloadKeys: []
 };
@@ -1237,16 +1243,29 @@ function refreshRhaiisClusterOptions() {
     renderToggleGroup('rh-cluster', filteredClusters, 'cluster');
 }
 
-async function loadRhaiisConfig() {
-    if (rhaiisConfig) return rhaiisConfig;
-    try {
-        const resp = await fetch('/api/rhaiis-config');
-        if (!resp.ok) throw new Error('Failed');
-        rhaiisConfig = await resp.json();
+async function loadRhaiisConfig(forceRefresh = false) {
+    if (!forceRefresh && rhaiisConfig && Date.now() - rhaiisConfigLoadedAt < RHAIIS_CONFIG_CLIENT_TTL_MS) {
         return rhaiisConfig;
-    } catch (err) {
-        console.error('Failed to load rhaiis config:', err);
-        return null;
+    }
+    if (rhaiisConfigLoadPromise) return rhaiisConfigLoadPromise;
+
+    const request = (async function() {
+        try {
+            const resp = await fetch('/api/rhaiis-config', {cache: 'no-store'});
+            if (!resp.ok) throw new Error('Failed');
+            rhaiisConfig = await resp.json();
+            rhaiisConfigLoadedAt = Date.now();
+            return rhaiisConfig;
+        } catch (err) {
+            console.error('Failed to load rhaiis config:', err);
+            return null;
+        }
+    })();
+    rhaiisConfigLoadPromise = request;
+    try {
+        return await request;
+    } finally {
+        if (rhaiisConfigLoadPromise === request) rhaiisConfigLoadPromise = null;
     }
 }
 
@@ -1574,6 +1593,7 @@ async function showRhaiisOptions() {
 }
 
 function hideRhaiisOptions() {
+    stopCptConfigAutoRefresh();
     document.getElementById('rhaiis-form').style.display = 'none';
     document.getElementById('rhaiis-single-form').style.display = '';
     document.getElementById('rhaiis-cpt-form').style.display = 'none';
@@ -2010,15 +2030,58 @@ function switchRhaiisMode(mode) {
     document.getElementById('yaml-preview-section').style.display = mode === 'single' ? '' : 'none';
     document.getElementById('submit-actions').style.display = mode === 'single' ? '' : 'none';
 
-    if (mode === 'cpt') initCptForm();
+    if (mode === 'cpt') {
+        initCptForm();
+        startCptConfigAutoRefresh();
+    } else {
+        stopCptConfigAutoRefresh();
+    }
+}
+
+function startCptConfigAutoRefresh() {
+    if (cptConfigRefreshTimer !== null) return;
+    cptConfigRefreshTimer = setInterval(async function() {
+        const cptForm = document.getElementById('rhaiis-cpt-form');
+        if (document.hidden || !cptForm || cptForm.style.display === 'none') return;
+
+        const previousSha = rhaiisConfig && rhaiisConfig.forge_commit_sha;
+        const updatedConfig = await loadRhaiisConfig(true);
+        if (!updatedConfig || !updatedConfig.forge_commit_sha) return;
+        if (updatedConfig.forge_commit_sha !== previousSha) {
+            await initCptForm();
+        }
+    }, CPT_CONFIG_AUTO_REFRESH_INTERVAL_MS);
+}
+
+function stopCptConfigAutoRefresh() {
+    if (cptConfigRefreshTimer === null) return;
+    clearInterval(cptConfigRefreshTimer);
+    cptConfigRefreshTimer = null;
 }
 
 async function initCptForm() {
     const cfg = await loadRhaiisConfig();
     if (!cfg) return;
 
-    cptPipelines = cfg.cpt_pipelines || [];
     const select = document.getElementById('cpt-pipeline-select');
+    const previouslySelectedPipeline = select.value;
+    const previousPipeline = cptPipelines.find(p => p.key === previouslySelectedPipeline);
+    const previousPipelineModels = previousPipeline ? previousPipeline.models || [] : [];
+    const previousAvailableModelNames = new Set(previousPipelineModels.map(function(model) {
+        return typeof model === 'string' ? model : model.name;
+    }));
+    const previousAvailableWorkloads = new Set(previousPipeline ? previousPipeline.workloads || [] : []);
+    for (const model of previousPipelineModels) {
+        if (model && typeof model === 'object' && Array.isArray(model.workloads)) {
+            for (const workload of model.workloads) previousAvailableWorkloads.add(workload);
+        }
+    }
+    const previouslySelectedModelNames = new Set(cptSelectedModels.map(function(model) {
+        return typeof model === 'string' ? model : model.name;
+    }));
+    const previouslySelectedWorkloads = new Set(cptSelectedWorkloads);
+
+    cptPipelines = cfg.cpt_pipelines || [];
     select.innerHTML = '<option value="">-- Select a CPT pipeline --</option>';
     for (const p of cptPipelines) {
         const opt = document.createElement('option');
@@ -2027,9 +2090,35 @@ async function initCptForm() {
         select.appendChild(opt);
     }
 
-    renderCptToggleGroup('cpt-accelerator', cfg.accelerators || [], 'accelerator');
-    renderCptToggleGroup('cpt-engine', cfg.engines || [], 'engine');
-    renderCptToggleGroup('cpt-cluster', cfg.clusters || [], 'cluster');
+    if (cptPipelines.some(p => p.key === previouslySelectedPipeline)) {
+        select.value = previouslySelectedPipeline;
+    }
+    const choices = {
+        accelerator: cfg.accelerators || [],
+        engine: cfg.engines || [],
+        cluster: cfg.clusters || [],
+    };
+    for (const [selection, items] of Object.entries(choices)) {
+        if (cptSelections[selection] && !items.some(item => item.key === cptSelections[selection])) {
+            cptSelections[selection] = '';
+        }
+    }
+
+    renderCptToggleGroup('cpt-accelerator', choices.accelerator, 'accelerator');
+    renderCptToggleGroup('cpt-engine', choices.engine, 'engine');
+    renderCptToggleGroup('cpt-cluster', choices.cluster, 'cluster');
+    onCptPipelineChange();
+
+    if (select.value === previouslySelectedPipeline && previouslySelectedPipeline) {
+        cptSelectedModels = cptSelectedModels.filter(function(model) {
+            const name = typeof model === 'string' ? model : model.name;
+            return !previousAvailableModelNames.has(name) || previouslySelectedModelNames.has(name);
+        });
+        cptSelectedWorkloads = cptSelectedWorkloads.filter(function(workload) {
+            return !previousAvailableWorkloads.has(workload) || previouslySelectedWorkloads.has(workload);
+        });
+        renderCptMatrix();
+    }
 }
 
 function renderCptToggleGroup(containerId, items, selKey) {
@@ -2113,6 +2202,9 @@ function onCptPipelineChange() {
     if (!pipeline) {
         desc.textContent = '';
         matrixCard.style.display = 'none';
+        cptSelectedModels = [];
+        cptDefaultWorkloads = [];
+        cptSelectedWorkloads = [];
         return;
     }
 
