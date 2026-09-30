@@ -127,6 +127,46 @@ async def _archive_job(job: dict) -> None:
                     message=fields["message"],
                 )
 
+            annotations = job.get("metadata", {}).get("annotations", {})
+            cpt_run_id = annotations.get("fournos.dev/cpt-run-id")
+            cpt_run_job_id = annotations.get("fournos.dev/cpt-run-job-id")
+            if cpt_run_id and cpt_run_job_id:
+                forge = (
+                    job.get("spec", {})
+                    .get("executionEngine", {})
+                    .get("forge", {})
+                )
+                overrides = forge.get("configOverrides", {}) or {}
+                workloads = overrides.get("tests.rhaiis.workload_keys", [])
+                if isinstance(workloads, str):
+                    workloads = [workloads]
+                if not isinstance(workloads, list):
+                    workloads = []
+                args = forge.get("args", [])
+                try:
+                    position = int(annotations.get("fournos.dev/cpt-run-position", 0))
+                except (TypeError, ValueError):
+                    position = 0
+                await db.upsert_cpt_run_job(
+                    session,
+                    id=cpt_run_job_id,
+                    run_id=cpt_run_id,
+                    position=position,
+                    job_name=job_name,
+                    model_name=annotations.get(
+                        "fournos.dev/cpt-model-name",
+                        job.get("spec", {}).get("displayName", ""),
+                    ),
+                    model_preset=annotations.get(
+                        "fournos.dev/cpt-model-preset",
+                        args[3] if len(args) > 3 else "",
+                    ),
+                    workloads=workloads,
+                    submission_status="Created",
+                    status=fields["status"],
+                    message=fields["message"],
+                )
+
     logger.info("Archived FournosJob %s (phase=%s)", job_name, fields["status"])
 
 

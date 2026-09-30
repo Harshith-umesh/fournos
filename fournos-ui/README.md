@@ -10,6 +10,7 @@ A web dashboard for managing [Fournos](https://github.com/openshift-psap/fournos
 - **Scheduling** -- Create Kubernetes CronJobs for recurring test runs, with optional version-resolver scripts that dynamically determine parameters at runtime.
 - **History** -- Browse completed jobs stored in PostgreSQL with status, duration, and direct links to MLflow artifacts.
 - **Schedule tracking** -- See which schedule triggered each job (manual vs. scheduled) and view all runs for a given schedule.
+- **CPT run tracking** -- Follow CPT submissions separately from ordinary jobs, grouped by project, CPT pipeline, and benchmark version, with a model-by-workload status matrix. Failed multi-profile FournosJobs are reported at job level because the current job status does not identify which profile failed.
 
 ## Architecture
 
@@ -113,6 +114,9 @@ oc get clusterissuer letsencrypt-production
 # Apply the main stack
 oc apply -k kustomize/overlays/ocp/
 
+# Grant the dashboard read-only access to target-cluster kubeconfig Secrets
+oc apply -k kustomize/target-cluster-secret-access/
+
 # Apply the cross-namespace RoleBinding (grants dashboard access to the jobs namespace)
 # Replace FOURNOS_NAMESPACE with your target namespace (e.g. psap-automation)
 oc apply -f - <<EOF
@@ -201,6 +205,7 @@ All configuration is via environment variables (set in the deployment manifest):
 | `FOURNOS_NAMESPACE` | Namespace where FournosJobs run | *set via overlay* |
 | `PROJECTS_CONFIG_PATH` | Path to projects YAML | `/etc/fournos-dashboard/projects.yaml` |
 | `K8S_REQUEST_TIMEOUT` | Timeout for K8s API calls (seconds) | `30` |
+| `TARGET_CLUSTER_SECRETS_NAMESPACE` | Namespace containing `kubeconfig-<cluster>` Secrets for live RHAIIS logs | `psap-secrets` |
 | `LOG_LEVEL` | Logging level | `INFO` |
 | `KUBECONFIG` | Path to kubeconfig (local dev only) | in-cluster config |
 | `FORGE_GITHUB_REPO` | GitHub `owner/repo` for PR listing | `openshift-psap/forge` |
@@ -213,6 +218,7 @@ Authentication is handled by the **OpenShift OAuth proxy** sidecar container. Th
 - **Who can access:** Any user who can authenticate to the OpenShift cluster.
 - **TLS:** The Route uses a Let's Encrypt certificate (auto-renewed by cert-manager). Traffic between the Route and the pod is re-encrypted using a service-ca cert.
 - **Local dev bypass:** When developing locally or using `oc port-forward` to port 8000, the OAuth proxy is bypassed entirely (traffic goes directly to FastAPI).
+- **Target-cluster logs:** The optional `kustomize/target-cluster-secret-access/` Role grants the dashboard service account `get` access to Secrets in `psap-secrets` so it can read target-cluster kubeconfigs. Kubernetes RBAC cannot scope this dynamically by Secret name prefix; keep that namespace limited to cluster credentials. Kubeconfigs are used only by the backend and are never returned to the browser.
 
 
 

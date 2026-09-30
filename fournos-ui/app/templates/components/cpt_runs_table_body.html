@@ -1,0 +1,45 @@
+{% if runs %}
+<div class="table-wrap cpt-runs-table-wrap">
+    <table class="jobs-table cpt-runs-table">
+        <thead>
+            <tr>
+                <th>CPT Pipeline</th>
+                <th>Version</th>
+                <th>Forge source</th>
+                <th>Cluster</th>
+                <th>Status</th>
+                <th>Jobs</th>
+                <th>Started</th>
+                <th>Owner</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in runs %}
+            <tr>
+                <td>
+                    <a class="cpt-run-pipeline" href="/cpt-jobs/{{ item.run.id }}?project={{ project | urlencode }}">
+                        {{ item.run.pipeline_key }}
+                    </a>
+                    <span class="cpt-run-id">{{ item.run.id[:8] }}</span>
+                </td>
+                <td><strong>{{ item.run.version_label or "Unspecified" }}</strong></td>
+                <td><code>{{ item.run.forge_source or "Unknown" }}</code></td>
+                <td>{{ item.run.cluster or "-" }}</td>
+                <td><span class="phase-badge {{ cpt_status_class(item.status) }}">{{ item.status }}</span></td>
+                <td>
+                    <span>{{ item.succeeded_jobs }}/{{ item.total_jobs }} succeeded</span>
+                    {% if item.failed_jobs %}<span class="cpt-run-subtext">{{ item.failed_jobs }} failed</span>{% endif %}
+                </td>
+                <td>{{ item.run.created_at.strftime("%Y-%m-%d %H:%M UTC") if item.run.created_at else "-" }}</td>
+                <td>{{ item.run.owner or "-" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="empty-state">
+    <p>No CPT pipeline runs found{% if project %} for <strong>{{ project }}</strong>{% endif %}.</p>
+    <a href="/submit" class="btn btn-primary">Submit a CPT run</a>
+</div>
+{% endif %}

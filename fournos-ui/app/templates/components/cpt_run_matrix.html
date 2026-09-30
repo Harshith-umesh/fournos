@@ -1,0 +1,57 @@
+<section class="cpt-run-results">
+    <div class="cpt-run-summary">
+        <span class="phase-badge {{ cpt_status_class(run_view.status) }}">{{ run_view.status }}</span>
+        <span>{{ run_view.succeeded_jobs }}/{{ run_view.total_jobs }} FournosJobs succeeded</span>
+        {% if run_view.failed_jobs %}<span class="cpt-run-failure-count">{{ run_view.failed_jobs }} failed or not submitted</span>{% endif %}
+        <span>{{ run_view.succeeded_profile_cases }}/{{ run_view.total_profile_cases }} workload cases passed</span>
+    </div>
+
+    <div class="cpt-status-note">
+        Profile cells reflect the associated FournosJob. A successful job means its requested profiles completed; when a multi-profile job fails, Fournos currently reports the failure at job level, so open that job to identify the failing step/profile.
+    </div>
+
+    {% if run_view.jobs and run_view.profiles %}
+    <div class="table-wrap cpt-matrix-wrap">
+        <table class="jobs-table cpt-profile-matrix">
+            <thead>
+                <tr>
+                    <th>Model / job</th>
+                    {% for profile in run_view.profiles %}<th>{{ profile }}</th>{% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for job in run_view.jobs %}
+                <tr>
+                    <td class="cpt-model-cell">
+                        <strong>{{ job.model_name }}</strong>
+                        <span class="cpt-run-subtext">{{ job.model_preset }}</span>
+                        {% if job.job_name %}
+                        <a href="/jobs/{{ job.job_name | urlencode }}" class="job-name">{{ job.job_name }}</a>
+                        {% elif job.message %}
+                        <span class="cpt-job-error" title="{{ job.message }}">{{ job.message }}</span>
+                        {% endif %}
+                    </td>
+                    {% for profile in run_view.profiles %}
+                    <td class="cpt-profile-cell">
+                        {% if profile in job.workloads %}
+                            {% if job.status == "Failed" %}
+                            <span class="phase-badge phase-failed" title="The FournosJob failed; profile-level failure is not reported separately.">Job failed</span>
+                            {% elif job.status == "Not submitted" %}
+                            <span class="phase-badge phase-failed" title="{{ job.message }}">Not submitted</span>
+                            {% else %}
+                            <span class="phase-badge {{ cpt_status_class(job.status) }}">{{ job.status }}</span>
+                            {% endif %}
+                        {% else %}
+                        <span class="cpt-not-requested" aria-label="Not requested">—</span>
+                        {% endif %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state"><p>No child jobs or workload profiles were recorded for this CPT run.</p></div>
+    {% endif %}
+</section>

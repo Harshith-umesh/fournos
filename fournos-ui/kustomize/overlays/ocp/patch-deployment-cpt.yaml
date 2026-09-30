@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fournos-dashboard
+spec:
+  template:
+    spec:
+      containers:
+        - name: dashboard
+          volumeMounts:
+            - name: cpt-pipelines
+              mountPath: /opt/fournos-dashboard/cpt.yaml
+              subPath: cpt.yaml
+              readOnly: true
+      volumes:
+        - name: cpt-pipelines
+          configMap:
+            name: cpt-pipelines

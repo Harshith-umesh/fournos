@@ -52,6 +52,12 @@ class Settings:
         default_factory=lambda: int(os.environ.get("K8S_REQUEST_TIMEOUT", "30"))
     )
 
+    target_cluster_secrets_namespace: str = field(
+        default_factory=lambda: os.environ.get(
+            "TARGET_CLUSTER_SECRETS_NAMESPACE", "psap-secrets"
+        )
+    )
+
     jobs_poll_interval_seconds: int = 5
 
     default_pipelines: tuple[str, ...] = (

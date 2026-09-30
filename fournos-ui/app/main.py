@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -14,6 +15,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import yaml
 from fastapi import FastAPI, Form, HTTPException, Query, Request
@@ -21,7 +23,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response, Streamin
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
-from app import db, k8s_client, watcher
+from app import db, inference_logs, k8s_client, watcher
 from app.config import settings
 from app.forge_discovery import discover_projects, get_project_presets
 
@@ -212,6 +214,7 @@ _jinja_env.globals.update(
     parse_task_progress=_parse_task_progress,
     build_timeline=_build_timeline,
     extract_mlflow_url=_extract_mlflow_url,
+    cpt_status_class=lambda status: _cpt_status_class(status),
     to_fjob_yaml=_to_fjob_yaml,
     url_for=lambda name, **kw: app.url_path_for(name, **kw),
     cache_bust=_CACHE_BUST,
@@ -225,6 +228,10 @@ _NAV_MAP = {
     "submit_job.html": "submit",
     "schedules.html": "schedules",
     "schedule_runs.html": "schedules",
+    "cpt_jobs.html": "cpt-jobs",
+    "cpt_run_detail.html": "cpt-jobs",
+    "components/cpt_runs_table_body.html": "cpt-jobs",
+    "components/cpt_run_matrix.html": "cpt-jobs",
 }
 
 
@@ -232,6 +239,84 @@ def _render(template_name: str, **context: Any) -> HTMLResponse:
     context.setdefault("active_nav", _NAV_MAP.get(template_name, ""))
     tpl = _jinja_env.get_template(template_name)
     return HTMLResponse(tpl.render(**context))
+
+
+def _cpt_status_class(status: str) -> str:
+    if status == "Succeeded":
+        return "phase-succeeded"
+    if status in {"Failed", "Not submitted", "Partially failed", "Failed job"}:
+        return "phase-failed"
+    if status in {"Stopped", "Partially stopped"}:
+        return "phase-stopped"
+    if status in {"Pending", "Submitting", "Running", "Admitted"}:
+        return "phase-running"
+    if status == "Resolving":
+        return "phase-resolving"
+    return "phase-unknown"
+
+
+def _cpt_job_view(job: db.CptRunJob) -> dict[str, Any]:
+    if job.submission_status == "Failed":
+        status = "Not submitted"
+    elif not job.job_name and job.submission_status != "Created":
+        status = "Submitting"
+    else:
+        status = job.status or "Unknown"
+
+    return {
+        "id": job.id,
+        "job_name": job.job_name,
+        "model_name": job.model_name,
+        "model_preset": job.model_preset,
+        "workloads": list(job.workloads or []),
+        "submission_status": job.submission_status,
+        "status": status,
+        "message": job.message or "",
+    }
+
+
+def _cpt_run_view(run: db.CptRun, child_jobs: list[db.CptRunJob]) -> dict[str, Any]:
+    jobs = [_cpt_job_view(job) for job in child_jobs]
+    statuses = [job["status"] for job in jobs]
+    succeeded = statuses.count("Succeeded")
+    failed = sum(status in {"Failed", "Not submitted"} for status in statuses)
+    stopped = statuses.count("Stopped")
+    terminal = {"Succeeded", "Failed", "Not submitted", "Stopped"}
+
+    if not statuses:
+        status = "Submitting"
+    elif any(item not in terminal for item in statuses):
+        status = "Running" if any(job["job_name"] for job in jobs) else "Submitting"
+    elif failed and succeeded:
+        status = "Partially failed"
+    elif failed:
+        status = "Failed"
+    elif stopped and succeeded:
+        status = "Partially stopped"
+    elif stopped:
+        status = "Stopped"
+    elif succeeded == len(statuses):
+        status = "Succeeded"
+    else:
+        status = "Unknown"
+
+    profiles = list(dict.fromkeys(
+        workload for job in jobs for workload in job["workloads"]
+    ))
+    return {
+        "run": run,
+        "jobs": jobs,
+        "profiles": profiles,
+        "status": status,
+        "total_jobs": len(jobs),
+        "succeeded_jobs": succeeded,
+        "failed_jobs": failed,
+        "stopped_jobs": stopped,
+        "total_profile_cases": sum(len(job["workloads"]) for job in jobs),
+        "succeeded_profile_cases": sum(
+            len(job["workloads"]) for job in jobs if job["status"] == "Succeeded"
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +593,135 @@ async def _get_job_for_rerun(job_name: str) -> dict | None:
     return None
 
 
+def _job_to_edit_draft(job_name: str, job: dict) -> dict[str, Any]:
+    """Convert a live or archived FournosJob into safe, editable form values."""
+    spec = job.get("spec", {}) or {}
+    forge = (
+        spec.get("executionEngine", {}).get("forge", {})
+        if isinstance(spec.get("executionEngine", {}), dict)
+        else {}
+    )
+    project = str(forge.get("project", "unknown"))
+    args = forge.get("args", []) or []
+    if not isinstance(args, list):
+        args = [args]
+    args = [str(arg) for arg in args]
+    overrides = forge.get("configOverrides", {}) or {}
+    if not isinstance(overrides, dict):
+        overrides = {}
+
+    env = spec.get("env", {}) or {}
+    hardware = spec.get("hardware", {}) or {}
+    supported_spec_fields = {
+        "cluster", "displayName", "owner", "pipeline", "exclusive", "priority",
+        "hardware", "secretRefs", "executionEngine", "env",
+    }
+    annotations = job.get("metadata", {}).get("annotations", {}) or {}
+
+    version_key = "tests.rhaiis.version" if project == "rhaiis" else _get_version_config_key(project)
+    return {
+        "source_job_name": job_name,
+        "project": project,
+        "cluster": spec.get("cluster", ""),
+        "pipeline": spec.get("pipeline", "forge-test-only"),
+        "preset": args[0] if args and project != "rhaiis" else "",
+        "args": args,
+        "owner": spec.get("owner", ""),
+        "priority": spec.get("priority", "manual"),
+        "exclusive": bool(spec.get("exclusive", False)),
+        "pull_sha": env.get("PULL_PULL_SHA", "") if isinstance(env, dict) else "",
+        "version": overrides.get(version_key, ""),
+        "version_key": version_key,
+        "gpu_type": hardware.get("gpuType", "") if isinstance(hardware, dict) else "",
+        "gpu_count": hardware.get("gpuCount", 1) if isinstance(hardware, dict) else 1,
+        "config_overrides": copy.deepcopy(overrides),
+        "is_rhaiis": project == "rhaiis",
+        "is_cpt_child": bool(
+            annotations.get("fournos.dev/cpt-run-id")
+            or str(spec.get("displayName", "")).startswith("rhaiis-cpt-")
+        ),
+        "preserved_spec_fields": sorted(set(spec) - supported_spec_fields),
+    }
+
+
+def _merge_edit_source_spec(
+    source_job: dict,
+    submitted_spec: dict,
+    project: str,
+    submitted_env: dict[str, str],
+) -> dict:
+    """Keep source-only spec fields while replacing values edited in the form."""
+    source_spec = copy.deepcopy(source_job.get("spec", {}) or {})
+    source_forge = (
+        source_spec.get("executionEngine", {}).get("forge", {})
+        if isinstance(source_spec.get("executionEngine", {}), dict)
+        else {}
+    )
+    if source_forge.get("project", "unknown") != project:
+        return submitted_spec
+
+    merged = {**source_spec, **submitted_spec}
+    source_engine = source_spec.get("executionEngine", {}) or {}
+    submitted_engine = submitted_spec.get("executionEngine", {}) or {}
+    merged_engine = {**source_engine, **submitted_engine}
+    submitted_forge = submitted_engine.get("forge", {}) or {}
+    merged_forge = {**source_forge, **submitted_forge}
+
+    # Generic submit exposes one preset. Keep any additional original Forge
+    # arguments; RHAIIS arguments are rehydrated individually by its adapter.
+    source_args = source_forge.get("args", []) or []
+    submitted_args = list(submitted_forge.get("args", []) or [])
+    if project != "rhaiis" and isinstance(source_args, list) and len(source_args) > 1:
+        merged_forge["args"] = submitted_args + source_args[1:]
+
+    merged_engine["forge"] = merged_forge
+    merged["executionEngine"] = merged_engine
+
+    source_hardware = source_spec.get("hardware", {}) or {}
+    submitted_hardware = submitted_spec.get("hardware", {}) or {}
+    if isinstance(source_hardware, dict) and isinstance(submitted_hardware, dict):
+        merged["hardware"] = {**source_hardware, **submitted_hardware}
+
+    # Keep environment variables other than the editable Forge build source.
+    source_env = copy.deepcopy(source_spec.get("env", {}) or {})
+    if isinstance(source_env, dict):
+        old_pull_sha = source_env.get("PULL_PULL_SHA", "")
+        source_env.pop("PULL_PULL_SHA", None)
+        new_pull_sha = submitted_env.get("PULL_PULL_SHA", "")
+        if old_pull_sha != new_pull_sha:
+            for key in ("PULL_NUMBER", "PULL_TITLE", "REPO_OWNER", "REPO_NAME"):
+                source_env.pop(key, None)
+        source_env.update(submitted_env)
+        if source_env:
+            merged["env"] = source_env
+        else:
+            merged.pop("env", None)
+
+    # RHAIIS's normal form supplies its standard refs, but retain any refs
+    # attached to the source job (including CPT child jobs).
+    if "secretRefs" in source_spec and project == "rhaiis":
+        merged["secretRefs"] = source_spec["secretRefs"]
+
+    merged.pop("shutdown", None)
+    return merged
+
+
+@app.get("/jobs/{job_name}/edit", response_class=HTMLResponse)
+async def edit_job_form(request: Request, job_name: str):
+    source_job = await _get_job_for_rerun(job_name)
+    if source_job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return _render(
+        "submit_job.html",
+        request=request,
+        projects=discover_projects(),
+        pipelines=list(settings.default_pipelines),
+        fournos_namespace=settings.fournos_namespace,
+        edit_draft=_job_to_edit_draft(job_name, source_job),
+    )
+
+
 @app.delete("/api/history/{job_name}")
 async def delete_history_job(job_name: str):
     """Delete a job from the history database."""
@@ -678,6 +892,72 @@ async def download_logs(job_name: str, pod_name: str):
     )
 
 
+def _is_rhaiis_testing_step(step: dict | None) -> bool:
+    if not step:
+        return False
+    step_name = str(step.get("name") or step.get("displayName") or "")
+    tokens = re.findall(r"[a-z0-9]+", step_name.lower())
+    return "test" in tokens or "testing" in tokens
+
+
+def _rhaiis_inference_logs_job_eligible(job: dict) -> bool:
+    return (
+        (job.get("status") or {}).get("phase") == "Running"
+        and _extract_forge_info(job).get("project") == "rhaiis"
+        and inference_logs.get_inference_service_reference(job) is not None
+    )
+
+
+async def _rhaiis_inference_logs_available(job_name: str, job: dict | None = None) -> bool:
+    if job is None:
+        job = await asyncio.to_thread(k8s_client.get_fournos_job, job_name)
+    if not job or not _rhaiis_inference_logs_job_eligible(job):
+        return False
+    try:
+        step = await asyncio.to_thread(k8s_client.get_current_step_for_job, job_name)
+    except Exception:
+        logger.debug("Unable to determine active step for %s", job_name, exc_info=True)
+        return False
+    return _is_rhaiis_testing_step(step)
+
+
+@app.get("/api/jobs/{job_name}/inference-logs/availability")
+async def inference_logs_availability(job_name: str):
+    """Tell the live detail page when RHAIIS inference logs can be opened."""
+    return {"available": await _rhaiis_inference_logs_available(job_name)}
+
+
+@app.get("/api/jobs/{job_name}/inference-logs")
+async def get_rhaiis_inference_logs(job_name: str, response: Response):
+    """Return the latest bounded predictor log tail for an active RHAIIS test."""
+    response.headers["Cache-Control"] = "no-store"
+    job = await asyncio.to_thread(k8s_client.get_fournos_job, job_name)
+    if not job:
+        raise HTTPException(status_code=404, detail="FournosJob not found")
+    if _extract_forge_info(job).get("project") != "rhaiis":
+        raise HTTPException(
+            status_code=404,
+            detail="Inference logs are only available for RHAIIS jobs.",
+        )
+    if not _rhaiis_inference_logs_job_eligible(job):
+        raise HTTPException(
+            status_code=409,
+            detail="Inference logs are available only while the RHAIIS test is active.",
+        )
+    if not await _rhaiis_inference_logs_available(job_name, job):
+        raise HTTPException(
+            status_code=409,
+            detail="Inference logs are available only while the RHAIIS test is active.",
+        )
+    try:
+        return await asyncio.to_thread(
+            inference_logs.get_inference_server_logs,
+            job,
+            k8s_client.get_secret,
+            tail_lines=300,
+        )
+    except inference_logs.InferenceLogsError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -689,9 +969,11 @@ async def submit_form(request: Request):
     projects = discover_projects()
     return _render(
         "submit_job.html",
+        request=request,
         projects=projects,
         pipelines=list(settings.default_pipelines),
         fournos_namespace=settings.fournos_namespace,
+        edit_draft=None,
     )
 
 
@@ -1330,18 +1612,34 @@ async def submit_job(
     priority: str = Form("manual"),
     gpu_type: str = Form(""),
     gpu_count: str = Form("1"),
+    edit_source_job_name: str = Form(""),
 ):
     exclusive_bool = exclusive.lower() in ("true", "on", "1", "yes")
+    edit_source_job = None
+    edit_source_job_name = edit_source_job_name.strip()
+    if edit_source_job_name:
+        edit_source_job = await _get_job_for_rerun(edit_source_job_name)
+        if edit_source_job is None:
+            raise HTTPException(status_code=404, detail="Source job not found")
 
     config_overrides: dict[str, Any] = {}
     if config_overrides_raw.strip():
-        for line in config_overrides_raw.strip().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if ":" in line:
-                k, v = line.split(":", 1)
-                config_overrides[k.strip()] = _parse_yaml_value(v.strip())
+        if edit_source_job:
+            try:
+                parsed_overrides = yaml.safe_load(config_overrides_raw)
+            except yaml.YAMLError as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid config overrides: {exc}") from exc
+            if parsed_overrides is not None and not isinstance(parsed_overrides, dict):
+                raise HTTPException(status_code=400, detail="Config overrides must be a YAML mapping")
+            config_overrides = parsed_overrides or {}
+        else:
+            for line in config_overrides_raw.strip().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    config_overrides[k.strip()] = _parse_yaml_value(v.strip())
 
     if version:
         version_key = _get_version_config_key(project)
@@ -1413,6 +1711,11 @@ async def submit_job(
     if project == "rhaiis":
         spec["secretRefs"] = ["psap-forge-dashboard-s3", "psap-forge-notifications"]
 
+    if edit_source_job:
+        spec = _merge_edit_source_spec(edit_source_job, spec, project, env)
+    elif env:
+        spec["env"] = env
+
     body = {
         "apiVersion": f"{settings.fournos_api_group}/{settings.fournos_api_version}",
         "kind": "FournosJob",
@@ -1423,19 +1726,36 @@ async def submit_job(
         "spec": spec,
     }
 
-    if env:
-        body["spec"]["env"] = env
-
     try:
         created = await asyncio.to_thread(k8s_client.create_fournos_job, body)
     except Exception as exc:
         projects = discover_projects()
+        retry_draft = None
+        if edit_source_job:
+            retry_draft = _job_to_edit_draft(edit_source_job_name, edit_source_job)
+            retry_draft.update({
+                "project": project,
+                "cluster": cluster,
+                "pipeline": pipeline,
+                "preset": preset,
+                "args": list(args),
+                "owner": owner,
+                "priority": priority,
+                "exclusive": exclusive_bool,
+                "pull_sha": pull_sha,
+                "version": rhaiis_version if project == "rhaiis" else version,
+                "gpu_type": gpu_type,
+                "gpu_count": gpu_count,
+                "config_overrides": config_overrides,
+            })
         return _render(
             "submit_job.html",
+            request=request,
             projects=projects,
             pipelines=list(settings.default_pipelines),
             fournos_namespace=settings.fournos_namespace,
             error=str(exc),
+            edit_draft=retry_draft,
         )
 
     created_name = created.get("metadata", {}).get("name", generate_name)
@@ -1467,8 +1787,8 @@ async def submit_cpt(request: Request):
     import json as _json
 
     payload = await request.json()
-    models: list[Any] = payload.get("models", [])
-    workloads: list[str] = payload.get("workloads", [])
+    models = payload.get("models", [])
+    workloads = payload.get("workloads", [])
     accelerator: str = payload.get("accelerator", "nvidia")
     engine: str = payload.get("engine", "vllm")
     cluster: str = payload.get("cluster", "hera")
@@ -1482,8 +1802,19 @@ async def submit_cpt(request: Request):
     overrides: dict = payload.get("overrides", {})
     engine_version: str = payload.get("engine_version", "")
 
-    if not models or not workloads:
+    if not isinstance(models, list) or not models:
+        raise HTTPException(status_code=400, detail="models must be a non-empty list")
+    if isinstance(workloads, str):
+        workloads = [workloads]
+    if not isinstance(workloads, list):
+        raise HTTPException(status_code=400, detail="workloads must be a non-empty list")
+    workloads = [str(workload).strip() for workload in workloads if str(workload).strip()]
+    if not workloads:
         raise HTTPException(status_code=400, detail="models and workloads are required")
+    if not cpt_pipeline_key:
+        raise HTTPException(status_code=400, detail="A CPT pipeline must be selected")
+    if not isinstance(overrides, dict):
+        raise HTTPException(status_code=400, detail="overrides must be an object")
 
     if isinstance(use_latest_main, str):
         use_latest_main = use_latest_main.lower() in ("true", "on", "1", "yes")
@@ -1531,8 +1862,8 @@ async def submit_cpt(request: Request):
     cluster_entries = {c["key"]: c for c in config.get("clusters", [])}
     gpu_type = cluster_entries.get(cluster, {}).get("gpu_type", "h200")
 
-    results = []
-    for model_item in models:
+    submission_items = []
+    for position, model_item in enumerate(models):
         if isinstance(model_item, dict):
             model_preset = model_item.get("preset", model_item.get("name", ""))
             model_label = model_item.get("name", model_preset)
@@ -1543,15 +1874,83 @@ async def submit_cpt(request: Request):
             per_model_overrides = {}
 
         model_entry = model_entries.get(model_preset, {})
-        model_preset_overrides = model_entry.get("overrides", {})
-        model_key = model_preset_overrides.get("tests.rhaiis.model_key", model_preset)
         cpt_tp = model_item.get("tp") if isinstance(model_item, dict) else None
         gpu_count = cpt_tp or model_entry.get("gpu_count", 1)
-        model_workloads = (
-            model_item.get("workloads")
-            if isinstance(model_item, dict) and model_item.get("workloads")
-            else workloads
-        )
+        model_workloads = model_item.get("workloads") if isinstance(model_item, dict) else None
+        if isinstance(model_workloads, str):
+            model_workloads = [model_workloads]
+        if not isinstance(model_workloads, list) or not model_workloads:
+            model_workloads = workloads
+        model_workloads = [
+            str(workload).strip()
+            for workload in model_workloads
+            if str(workload).strip()
+        ] or workloads
+        submission_items.append({
+            "id": str(uuid4()),
+            "position": position,
+            "model_item": model_item,
+            "model_preset": model_preset,
+            "model_label": model_label,
+            "per_model_overrides": per_model_overrides,
+            "cpt_tp": cpt_tp,
+            "gpu_count": gpu_count,
+            "model_workloads": list(model_workloads),
+        })
+
+    run_id = str(uuid4())
+    try:
+        async with db.async_session() as session:
+            async with session.begin():
+                await db.create_cpt_run(
+                    session,
+                    id=run_id,
+                    project="rhaiis",
+                    pipeline_key=cpt_pipeline_key or "unspecified",
+                    forge_pipeline=pipeline,
+                    version_label=version_label,
+                    forge_source=pull_sha,
+                    owner=owner,
+                    cluster=cluster,
+                    accelerator=accelerator,
+                    engine=engine,
+                    engine_version=engine_version,
+                    run_metadata={
+                        "priority": priority,
+                        "requested_workloads": list(workloads),
+                    },
+                )
+                for item in submission_items:
+                    await db.upsert_cpt_run_job(
+                        session,
+                        id=item["id"],
+                        run_id=run_id,
+                        position=item["position"],
+                        job_name=None,
+                        model_name=str(item["model_label"]),
+                        model_preset=str(item["model_preset"]),
+                        workloads=item["model_workloads"],
+                        submission_status="Submitting",
+                        status="Pending",
+                        message="",
+                    )
+    except Exception as exc:
+        logger.exception("Failed to initialize CPT run tracking")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not initialize CPT run tracking; no FournosJobs were submitted.",
+        ) from exc
+
+    results = []
+    for item in submission_items:
+        model_item = item["model_item"]
+        model_preset = item["model_preset"]
+        model_label = item["model_label"]
+        per_model_overrides = item["per_model_overrides"]
+        model_entry = model_entries.get(model_preset, {})
+        cpt_tp = item["cpt_tp"]
+        gpu_count = item["gpu_count"]
+        model_workloads = item["model_workloads"]
 
         args = [accelerator, engine, cluster, model_preset]
 
@@ -1598,6 +1997,13 @@ async def submit_cpt(request: Request):
             "metadata": {
                 "generateName": generate_name,
                 "namespace": settings.fournos_namespace,
+                "annotations": {
+                    "fournos.dev/cpt-run-id": run_id,
+                    "fournos.dev/cpt-run-job-id": item["id"],
+                    "fournos.dev/cpt-run-position": str(item["position"]),
+                    "fournos.dev/cpt-model-name": str(model_label),
+                    "fournos.dev/cpt-model-preset": str(model_preset),
+                },
             },
             "spec": spec,
         }
@@ -1621,16 +2027,110 @@ async def submit_cpt(request: Request):
                             cluster=cluster,
                             pipeline=pipeline,
                             owner=owner,
-                            status="Pending",
                             config_overrides=job_overrides,
                             fjob_spec=body.get("spec", {}),
+                        )
+                        await db.upsert_cpt_run_job(
+                            session,
+                            id=item["id"],
+                            run_id=run_id,
+                            position=item["position"],
+                            job_name=created_name,
+                            model_name=str(model_label),
+                            model_preset=str(model_preset),
+                            workloads=model_workloads,
+                            submission_status="Created",
+                            message="",
                         )
             except Exception as exc:
                 logger.error("DB upsert failed for CPT job %s: %s", created_name, exc)
         except Exception as exc:
             results.append({"model": model_label, "error": str(exc), "status": "failed"})
+            try:
+                async with db.async_session() as session:
+                    async with session.begin():
+                        await db.upsert_cpt_run_job(
+                            session,
+                            id=item["id"],
+                            run_id=run_id,
+                            position=item["position"],
+                            job_name=None,
+                            model_name=str(model_label),
+                            model_preset=str(model_preset),
+                            workloads=model_workloads,
+                            submission_status="Failed",
+                            status="Failed",
+                            message=str(exc)[:4000],
+                        )
+            except Exception as tracking_exc:
+                logger.error(
+                    "Failed to record CPT submission failure for %s: %s",
+                    model_label,
+                    tracking_exc,
+                )
 
-    return {"status": "ok", "jobs": results, "total": len(results)}
+    return {"status": "ok", "run_id": run_id, "jobs": results, "total": len(results)}
+
+
+async def _load_cpt_run_views(project: str = "") -> tuple[list[str], list[dict[str, Any]]]:
+    async with db.async_session() as session:
+        projects = await db.list_cpt_run_projects(session)
+        runs, jobs_by_run = await db.list_cpt_runs_with_jobs(
+            session,
+            project=project or None,
+        )
+    projects = sorted(set(projects) | {"rhaiis"})
+    views = [
+        _cpt_run_view(run, list(jobs_by_run.get(run.id, [])))
+        for run in runs
+    ]
+    return projects, views
+
+
+async def _load_cpt_run_view(run_id: str) -> dict[str, Any] | None:
+    async with db.async_session() as session:
+        run = await db.get_cpt_run(session, run_id)
+        if run is None:
+            return None
+        jobs = await db.list_cpt_run_jobs(session, run_id)
+    return _cpt_run_view(run, list(jobs))
+
+
+@app.get("/cpt-jobs", response_class=HTMLResponse)
+async def cpt_jobs_page(
+    request: Request,
+    project: str = Query("rhaiis"),
+):
+    projects, runs = await _load_cpt_run_views(project)
+    return _render(
+        "cpt_jobs.html",
+        request=request,
+        projects=projects,
+        project=project,
+        runs=runs,
+    )
+
+
+@app.get("/api/cpt-jobs/table", response_class=HTMLResponse)
+async def cpt_jobs_table(project: str = Query("rhaiis")):
+    _, runs = await _load_cpt_run_views(project)
+    return _render("components/cpt_runs_table_body.html", runs=runs, project=project)
+
+
+@app.get("/cpt-jobs/{run_id}", response_class=HTMLResponse)
+async def cpt_run_detail(request: Request, run_id: str):
+    run_view = await _load_cpt_run_view(run_id)
+    if run_view is None:
+        raise HTTPException(status_code=404, detail="CPT run not found")
+    return _render("cpt_run_detail.html", request=request, run_view=run_view)
+
+
+@app.get("/api/cpt-jobs/{run_id}/matrix", response_class=HTMLResponse)
+async def cpt_run_matrix(run_id: str):
+    run_view = await _load_cpt_run_view(run_id)
+    if run_view is None:
+        raise HTTPException(status_code=404, detail="CPT run not found")
+    return _render("components/cpt_run_matrix.html", run_view=run_view)
 
 
 # ---------------------------------------------------------------------------

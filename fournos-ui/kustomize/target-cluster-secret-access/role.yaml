@@ -1,0 +1,13 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fournos-dashboard-target-kubeconfigs
+  namespace: psap-secrets
+  labels:
+    app.kubernetes.io/name: fournos-dashboard
+rules:
+  # Cluster names are discovered dynamically, so Kubernetes RBAC cannot
+  # restrict this to secrets with a kubeconfig- name prefix.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]

@@ -104,6 +104,21 @@ def get_fournos_job(name: str, namespace: str | None = None) -> dict | None:
         return None
 
 
+def get_secret(name: str, namespace: str) -> dict | None:
+    """Read a Secret from the management cluster (e.g. target kubeconfig)."""
+    _ensure_loaded()
+    if _core_api is None:
+        raise RuntimeError("Kubernetes client not available")
+    try:
+        secret = _core_api.read_namespaced_secret(name=name, namespace=namespace)
+        return secret.to_dict()
+    except ApiException as exc:
+        if exc.status == 404:
+            return None
+        logger.error("Failed to read Secret %s/%s: %s", namespace, name, exc.reason)
+        raise
+
+
 def create_fournos_job(body: dict, namespace: str | None = None) -> dict:
     """Create a new FournosJob CR."""
     _ensure_loaded()

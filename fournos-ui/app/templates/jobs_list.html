@@ -136,6 +136,9 @@
                         </svg>
                     </button>
                     <div class="actions-menu">
+                        <a class="actions-menu-item" href="/jobs/{{ job.name | urlencode }}/edit">
+                            <span aria-hidden="true">&#9998;</span> Edit &amp; Submit
+                        </a>
                         <button class="actions-menu-item" onclick="rerunJob('{{ job.name }}', this)">
                             <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.534 7h3.932a.25.25 0 0 1 .192.41l-1.966 2.36a.25.25 0 0 1-.384 0l-1.966-2.36A.25.25 0 0 1 11.534 7zm-11 2h3.932a.25.25 0 0 0 .192-.41L2.692 6.23a.25.25 0 0 0-.384 0L.342 8.59A.25.25 0 0 0 .534 9z"/><path d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.418A6 6 0 1 1 8 2v1z"/><path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/></svg>
                             Run Again

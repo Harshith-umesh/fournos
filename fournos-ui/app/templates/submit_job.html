@@ -333,14 +333,33 @@
 }
 </style>
 <div class="page-header">
-    <h2>Submit Job</h2>
+    <h2>{% if edit_draft %}Edit &amp; Submit Job{% else %}Submit Job{% endif %}</h2>
 </div>
 
 {% if error %}
 <div class="alert alert-error">{{ error }}</div>
 {% endif %}
 
+{% if edit_draft %}
+<div class="alert edit-job-notice">
+    <strong>Editing {{ edit_draft.source_job_name }}.</strong>
+    Submitting creates a new job; the source job will not be changed.
+    {% if edit_draft.is_cpt_child %}
+    This is one model job from a CPT run; the rest of the CPT matrix will not be resubmitted.
+    {% endif %}
+    {% if edit_draft.preserved_spec_fields %}
+    <details class="edit-preserved-fields">
+        <summary>Additional source settings preserved as-is</summary>
+        <code>{{ edit_draft.preserved_spec_fields | join(", ") }}</code>
+    </details>
+    {% endif %}
+</div>
+{% endif %}
+
 <form method="POST" action="/submit" class="submit-form" onsubmit="return validateSubmit()">
+    {% if edit_draft %}
+    <input type="hidden" name="edit_source_job_name" value="{{ edit_draft.source_job_name }}">
+    {% endif %}
     <!-- Generic form (non-rhaiis projects) -->
     <div id="generic-form">
         <div class="form-grid">
@@ -611,7 +630,7 @@
                     <span>Benchmark</span>
                 </label>
                 <label class="switch-label" data-tooltip="Enable prefix caching&#10;vLLM: enable-prefix-caching&#10;SGLang: radix cache is enabled by default; off uses disable-radix-cache&#10;TRT-LLM: kv_cache_config.enable_block_reuse">
-                    <input type="checkbox" id="rh-prefix-caching" onchange="syncRhaiisArgs()">
+                    <input type="checkbox" id="rh-prefix-caching" checked onchange="syncRhaiisArgs()">
                     <span>Prefix Caching</span>
                 </label>
                 <label class="switch-label" data-tooltip="Run warmup requests before the benchmark&#10;tests.rhaiis.warmup&#10;&#10;Default: concurrency 200 for 60 seconds">
@@ -717,6 +736,10 @@ rhaiis.engines.vllm.args.max-model-len: 4096
 rhaiis.engines.vllm.args.kv-cache-dtype: fp8
 rhaiis.engines.vllm.args.enable-auto-tool-choice: true
 rhaiis.engines.vllm.args.tool-call-parser: openai
+
+# Environment variables
+rhaiis.env_vars.VLLM_SOME_FLAG: "1"
+rhaiis.env_vars.ANOTHER_VAR: "value"
 
 # Speculative decoding
 rhaiis.engines.vllm.args.speculative-config: '{"model":"...","num_speculative_tokens":7,"method":"eagle3"}'
@@ -883,6 +906,7 @@ benchmarks.guidellm.fs_group: 0</pre>
                 <div style="font-weight: 600; margin-bottom: 8px;">CPT Submission Results</div>
                 <div id="cpt-results-list"></div>
                 <div style="margin-top: 16px;">
+                    <a href="#" id="cpt-track-run-link" class="btn btn-secondary" style="display: none;">Track this CPT run</a>
                     <a href="/?tab=live" class="btn btn-primary">View Live Jobs</a>
                 </div>
             </div>
@@ -903,13 +927,19 @@ benchmarks.guidellm.fs_group: 0</pre>
     </div>
 
     <div class="form-actions" id="submit-actions">
-        <button type="submit" class="btn btn-primary">Submit Job</button>
+        <button type="submit" class="btn btn-primary">{% if edit_draft %}Submit as New Job{% else %}Submit Job{% endif %}</button>
+        {% if edit_draft %}
+        <a href="/jobs/{{ edit_draft.source_job_name | urlencode }}" class="btn btn-secondary">Cancel</a>
+        {% else %}
         <a href="/" class="btn btn-secondary">Cancel</a>
+        {% endif %}
     </div>
 </form>
 
 <script>
 const VERSION_PROJECTS = ['mcp_gateway'];
+const EDIT_DRAFT = {{ edit_draft | tojson }};
+let rhaiisEditExtraArgs = [];
 
 function parseYamlValue(s) {
     if (s === 'true') return true;
@@ -1181,10 +1211,19 @@ document.addEventListener('click', function(e) {
     });
 });
 
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
     loadOpenPRs();
     loadReleases();
     setFormFieldsDisabled(document.getElementById('rhaiis-form'), true);
+    if (EDIT_DRAFT) {
+        try {
+            await hydrateEditDraft(EDIT_DRAFT);
+        } catch (err) {
+            console.error('Could not prefill edit form:', err);
+            const notice = document.querySelector('.edit-job-notice');
+            if (notice) notice.insertAdjacentHTML('beforeend', '<div class="alert-error" style="margin-top:8px">Some source settings could not be loaded. Review the form before submitting.</div>');
+        }
+    }
 });
 
 /* ── Project switching ── */
@@ -1759,6 +1798,7 @@ function syncRhaiisArgs() {
     if (rhaiisSelections.model && rhaiisSelections.model !== '__custom_model__') {
         args.push(rhaiisSelections.model);
     }
+    if (rhaiisEditExtraArgs.length) args.push(...rhaiisEditExtraArgs);
     document.getElementById('rhaiis-args-input').value = args.join(',');
     document.getElementById('rhaiis-version-input').value = document.getElementById('rh-version').value;
 
@@ -2005,6 +2045,273 @@ async function loadPresets(projectName) {
     } catch (err) {
         hint.textContent = 'Failed to load project info.';
     }
+}
+
+function setSelectValue(select, value, label) {
+    if (!select || value === undefined || value === null || value === '') return;
+    const text = String(value);
+    if (!Array.from(select.options).some(option => option.value === text)) {
+        const option = document.createElement('option');
+        option.value = text;
+        option.textContent = label || text + ' (from source job)';
+        select.appendChild(option);
+    }
+    select.value = text;
+}
+
+function formatEditOverrides(overrides, shouldOmit) {
+    return Object.entries(overrides || {})
+        .filter(([key]) => !shouldOmit(key))
+        .map(([key, value]) => key + ': ' + JSON.stringify(value))
+        .join('\n');
+}
+
+function isRhaiisFormOverride(key, engine, accelerator) {
+    const formKeys = new Set([
+        'tests.rhaiis.version',
+        'tests.rhaiis.model_key',
+        'tests.rhaiis.workload_key',
+        'tests.rhaiis.workload_keys',
+        'tests.rhaiis.run_benchmark',
+        'tests.rhaiis.warmup',
+        'rhaiis.profiler.enabled',
+        'tests.rhaiis.slack_notify_always',
+        'tests.rhaiis.slack_user',
+        'tests.rhaiis.compare_version',
+        'rhaiis.agent_analysis.enabled',
+        'caliper.postprocess.csv_dashboard.enabled',
+        'rhaiis.engines.vllm.args.enable-prefix-caching',
+        'rhaiis.engines.vllm.args.no-enable-prefix-caching',
+        'rhaiis.engines.vllm.args.tensor-parallel-size',
+        'rhaiis.engines.sglang.args.disable-radix-cache',
+        'rhaiis.engines.trtllm.trtllm_config.kv_cache_config.enable_block_reuse',
+        'models.custom.name',
+        'models.custom.hf_model_id',
+    ]);
+    if (key.startsWith('workloads.custom.')) return true;
+    if (engine && accelerator && key === 'rhaiis.engines.' + engine + '.images.' + accelerator) return true;
+    return formKeys.has(key);
+}
+
+function takeKnownArgument(args, items) {
+    const index = args.findIndex(arg => (items || []).some(item => String(item.key) === arg));
+    return index < 0 ? '' : args.splice(index, 1)[0];
+}
+
+function ensureRhaiisItem(items, key, extra = {}) {
+    if (!key || items.some(item => String(item.key) === String(key))) return;
+    items.push({key, label: String(key) + ' (from source job)', ...extra});
+}
+
+async function hydrateEditDraft(draft) {
+    const project = draft.project || 'unknown';
+    if (project === 'rhaiis') {
+        await hydrateRhaiisEditDraft(draft);
+        return;
+    }
+
+    const projectSelect = document.getElementById('project');
+    setSelectValue(projectSelect, project);
+    await loadPresets(project);
+
+    setSelectValue(document.getElementById('pipeline'), draft.pipeline);
+    setSelectValue(document.getElementById('preset'), draft.preset);
+    document.getElementById('cluster').value = draft.cluster || '';
+    document.getElementById('owner').value = draft.owner || '';
+    setSelectValue(document.getElementById('priority'), draft.priority || 'manual');
+    document.getElementById('exclusive').checked = Boolean(draft.exclusive);
+    document.getElementById('pull_sha').pattern = '';
+    document.getElementById('pull_sha').value = draft.pull_sha || '';
+
+    if (VERSION_PROJECTS.includes(project)) {
+        document.getElementById('version').value = draft.version || '';
+    }
+    document.getElementById('config_overrides_raw').value = formatEditOverrides(
+        draft.config_overrides,
+        key => VERSION_PROJECTS.includes(project) && key === draft.version_key,
+    );
+}
+
+async function hydrateRhaiisEditDraft(draft) {
+    const cfg = await loadRhaiisConfig();
+    if (!cfg) throw new Error('RHAIIS configuration is unavailable');
+
+    const args = Array.isArray(draft.args) ? draft.args.map(String) : [];
+    const overrides = draft.config_overrides || {};
+    const quickPresets = [...(cfg.quick_presets || [])];
+    const accelerators = [...(cfg.accelerators || [])];
+    const engines = [...(cfg.engines || [])];
+    const clusters = [...(cfg.clusters || [])];
+    const models = [...(cfg.models || [])];
+    const workloads = [...(cfg.workloads || [])];
+
+    const quickPreset = takeKnownArgument(args, quickPresets);
+    const accelerator = takeKnownArgument(args, accelerators);
+    const engine = takeKnownArgument(args, engines);
+    const clusterArg = takeKnownArgument(args, clusters);
+    const cluster = clusterArg || String(draft.cluster || '');
+    if (!clusterArg && cluster) {
+        const staleClusterArg = args.indexOf(cluster);
+        if (staleClusterArg !== -1) args.splice(staleClusterArg, 1);
+    }
+    const modelArg = takeKnownArgument(args, models);
+    const modelKey = overrides['tests.rhaiis.model_key'];
+    let model = modelArg;
+    if (modelKey === 'custom') {
+        model = '__custom_model__';
+    } else if (!model && modelKey) {
+        const configuredModel = models.find(item => item.overrides && item.overrides['tests.rhaiis.model_key'] === modelKey);
+        if (configuredModel) model = configuredModel.key;
+    }
+
+    ensureRhaiisItem(accelerators, accelerator);
+    ensureRhaiisItem(engines, engine);
+    ensureRhaiisItem(clusters, cluster, {gpu_type: draft.gpu_type || ''});
+    ensureRhaiisItem(models, model && model !== '__custom_model__' ? model : '');
+
+    const configuredQuickPreset = quickPresets.find(item => item.key === quickPreset);
+    let selectedWorkloads = overrides['tests.rhaiis.workload_keys'];
+    if (selectedWorkloads === undefined) selectedWorkloads = overrides['tests.rhaiis.workload_key'];
+    if (typeof selectedWorkloads === 'string') selectedWorkloads = [selectedWorkloads];
+    if (!Array.isArray(selectedWorkloads) && configuredQuickPreset && Array.isArray(configuredQuickPreset.workload_keys)) {
+        selectedWorkloads = configuredQuickPreset.workload_keys;
+    }
+    selectedWorkloads = Array.isArray(selectedWorkloads) ? selectedWorkloads.map(String) : [];
+    const uiWorkloads = selectedWorkloads.map(key => key === 'custom' ? '__custom_workload__' : key);
+    for (const key of uiWorkloads) {
+        if (key !== '__custom_workload__' && !workloads.some(item => (item.workload_key || item.key) === key)) {
+            workloads.push({key, workload_key: key, label: key + ' (from source job)'});
+        }
+    }
+
+    rhaiisSelections.accelerator = accelerator;
+    rhaiisSelections.engine = engine;
+    rhaiisSelections.cluster = cluster;
+    rhaiisSelections.model = model;
+    rhaiisSelections.workloads = uiWorkloads;
+    rhaiisSelections.quickWorkloadKeys = configuredQuickPreset && Array.isArray(configuredQuickPreset.workload_keys)
+        ? configuredQuickPreset.workload_keys.slice()
+        : [];
+    rhaiisEditExtraArgs = args;
+
+    // Let the existing project-specific UI render its dynamic controls from
+    // the current Forge configuration, with the source selections active.
+    const originalConfigLists = {
+        quick_presets: cfg.quick_presets,
+        accelerators: cfg.accelerators,
+        engines: cfg.engines,
+        clusters: cfg.clusters,
+        models: cfg.models,
+        workloads: cfg.workloads,
+    };
+    Object.assign(cfg, {
+        quick_presets: quickPresets,
+        accelerators,
+        engines,
+        clusters,
+        models,
+        workloads,
+    });
+    try {
+        await showRhaiisOptions();
+    } finally {
+        Object.assign(cfg, originalConfigLists);
+    }
+
+    setSelectValue(document.getElementById('rh-pipeline'), draft.pipeline || 'forge-full');
+    document.getElementById('rh-owner').value = draft.owner || '';
+    setSelectValue(document.getElementById('rh-priority'), draft.priority || 'manual');
+    document.getElementById('rh-exclusive').checked = Boolean(draft.exclusive);
+    document.getElementById('rh-cluster-input').value = rhaiisSelections.cluster;
+    document.getElementById('cluster').value = rhaiisSelections.cluster;
+    document.getElementById('gpu_type').value = draft.gpu_type || '';
+
+    const quickButton = Array.from(document.querySelectorAll('#rh-quick-presets .toggle-btn'))
+        .find(button => button.dataset.key === quickPreset);
+    if (quickButton) quickButton.classList.add('active');
+
+    const modelSelect = document.getElementById('rh-model');
+    if (model === '__custom_model__') {
+        modelSelect.value = '__custom_model__';
+        modelSelect.dispatchEvent(new Event('change'));
+        document.getElementById('rh-custom-model-name').value = overrides['models.custom.name'] || '';
+        document.getElementById('rh-custom-model-id').value = overrides['models.custom.hf_model_id'] || '';
+        document.getElementById('rh-custom-model-tp').value = overrides['rhaiis.engines.vllm.args.tensor-parallel-size'] || 1;
+    } else if (model) {
+        if (!Array.from(modelSelect.options).some(option => option.value === model)) {
+            setSelectValue(modelSelect, model);
+            modelSelect.onchange = function() { rhaiisSelections.model = this.value; syncRhaiisArgs(); };
+        }
+        modelSelect.value = model;
+        modelSelect.dispatchEvent(new Event('change'));
+        const tpValue = overrides['rhaiis.engines.vllm.args.tensor-parallel-size'];
+        if (tpValue !== undefined) document.getElementById('rh-tp-override').value = tpValue;
+    }
+
+    renderCheckboxGroup('rh-workloads', workloads, 'workloads');
+    addCustomWorkloadCheckbox();
+    document.querySelectorAll('#rh-workloads input[type="checkbox"]').forEach(checkbox => {
+        checkbox.checked = rhaiisSelections.workloads.includes(checkbox.value);
+        if (checkbox.checked) checkbox.parentElement.classList.add('checked');
+    });
+    document.getElementById('rh-custom-workload-section').style.display =
+        rhaiisSelections.workloads.includes('__custom_workload__') ? '' : 'none';
+
+    document.getElementById('gpu_count').value = draft.gpu_count || 1;
+    document.getElementById('rh-version').value = overrides['tests.rhaiis.version'] || draft.version || '';
+    document.getElementById('rh-engine-version').value = engine && accelerator
+        ? overrides['rhaiis.engines.' + engine + '.images.' + accelerator] || ''
+        : '';
+    if (overrides['workloads.custom.data'] !== undefined) {
+        document.getElementById('rh-custom-wl-data').value = overrides['workloads.custom.data'];
+    }
+    if (overrides['workloads.custom.concurrencies'] !== undefined) {
+        document.getElementById('rh-custom-wl-concurrencies').value = Array.isArray(overrides['workloads.custom.concurrencies'])
+            ? overrides['workloads.custom.concurrencies'].join(',')
+            : overrides['workloads.custom.concurrencies'];
+    }
+    if (overrides['workloads.custom.max_seconds'] !== undefined) {
+        document.getElementById('rh-custom-wl-max-seconds').value = overrides['workloads.custom.max_seconds'];
+    }
+    if (overrides['workloads.custom.samples'] !== undefined) {
+        document.getElementById('rh-custom-wl-samples').value = overrides['workloads.custom.samples'];
+    }
+
+    document.getElementById('rh-benchmark').checked = overrides['tests.rhaiis.run_benchmark'] !== false;
+    document.getElementById('rh-warmup').checked = overrides['tests.rhaiis.warmup'] !== false;
+    document.getElementById('rh-profiler').checked = Boolean(overrides['rhaiis.profiler.enabled']);
+    document.getElementById('rh-slack').checked = overrides['tests.rhaiis.slack_notify_always'] !== false;
+    document.getElementById('rh-agent-analysis').checked = Boolean(overrides['rhaiis.agent_analysis.enabled']);
+    document.getElementById('rh-csv-dashboard').checked = Boolean(overrides['caliper.postprocess.csv_dashboard.enabled']);
+    document.getElementById('rh-slack-member-id').value = overrides['tests.rhaiis.slack_user'] || '';
+    document.getElementById('rh-compare-version').value = overrides['tests.rhaiis.compare_version'] || '';
+    document.getElementById('rh-compare-versions').checked = Boolean(overrides['tests.rhaiis.compare_version']);
+
+    let prefixEnabled = true;
+    if (engine === 'sglang') {
+        prefixEnabled = overrides['rhaiis.engines.sglang.args.disable-radix-cache'] !== true;
+    } else if (engine === 'trtllm') {
+        prefixEnabled = overrides['rhaiis.engines.trtllm.trtllm_config.kv_cache_config.enable_block_reuse'] !== false;
+    } else if (overrides['rhaiis.engines.vllm.args.no-enable-prefix-caching'] === true) {
+        prefixEnabled = false;
+    } else if (Object.prototype.hasOwnProperty.call(overrides, 'rhaiis.engines.vllm.args.enable-prefix-caching')) {
+        prefixEnabled = Boolean(overrides['rhaiis.engines.vllm.args.enable-prefix-caching']);
+    }
+    document.getElementById('rh-prefix-caching').checked = prefixEnabled;
+
+    const sourceSha = draft.pull_sha || '';
+    const useLatestMain = sourceSha === 'main';
+    document.getElementById('rh-latest-main').checked = useLatestMain;
+    document.getElementById('rh-pull-sha').value = useLatestMain ? '' : sourceSha;
+    updateRhaiisBuildSourceUI('single');
+    updateEngineCombo();
+    updateCompareVersionUI();
+
+    document.getElementById('rh-config-overrides').value = formatEditOverrides(
+        overrides,
+        key => isRhaiisFormOverride(key, engine, accelerator),
+    );
+    syncRhaiisArgs();
 }
 
 // ── CPT Pipeline Functions ──────────────────────────────────────────────
@@ -2592,7 +2899,12 @@ async function submitCpt() {
 function showCptResults(data) {
     const container = document.getElementById('cpt-results');
     const list = document.getElementById('cpt-results-list');
+    const trackerLink = document.getElementById('cpt-track-run-link');
     list.innerHTML = '';
+    if (data.run_id) {
+        trackerLink.href = '/cpt-jobs/' + encodeURIComponent(data.run_id);
+        trackerLink.style.display = '';
+    }
 
     for (const job of (data.jobs || [])) {
         const item = document.createElement('div');

@@ -92,6 +92,23 @@
      hx-swap="innerHTML">
     {% include "components/job_detail_dynamic.html" %}
 </div>
+{% if info.project == 'rhaiis' %}
+<div id="inference-logs-availability" style="margin: -8px 0 20px;">
+    <button id="open-inference-logs" class="btn btn-sm" type="button" onclick="toggleInferenceLogs()" style="display:none;">View Inference Server Logs</button>
+</div>
+<div id="inference-logs-panel" class="card" style="display:none; margin-bottom:20px;">
+    <div class="card-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <span>Inference Server Logs <span style="font-weight:400;font-size:12px;color:var(--text-muted);">(latest 300 lines, refreshes while open)</span>
+            <span id="inference-logs-pod" style="font-weight:400;font-size:12px;color:var(--text-muted);"></span>
+        </span>
+        <button class="btn btn-sm" type="button" onclick="closeInferenceLogs()">Close</button>
+    </div>
+    <div class="card-body">
+        <pre id="inference-logs-output" role="log" aria-live="polite" style="margin:0;max-height:480px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 var(--font-mono);">Open the viewer while the RHAIIS test is running.</pre>
+        <div id="inference-logs-message" class="text-muted" style="margin-top:8px;font-size:12px;"></div>
+    </div>
+</div>
+{% endif %}
 {% else %}
 {% include "components/job_detail_dynamic.html" %}
 {% endif %}
@@ -161,6 +178,10 @@
 <script>
 let currentSource = null;
 const jobPhase = "{{ phase }}";
+const inferenceLogsJob = "{{ job.metadata.name | urlencode }}";
+let inferenceLogsInterval = null;
+let inferenceLogsRequestPending = false;
+let inferenceAvailabilityRequestPending = false;
 
 function cancelJob(jobName) {
     if (!confirm('Cancel job ' + jobName + '?')) return;
@@ -238,7 +259,74 @@ function loadLogs(podName, source) {
     };
 }
 
+function setInferenceLogsAvailable(available) {
+    const button = document.getElementById('open-inference-logs');
+    const panel = document.getElementById('inference-logs-panel');
+    if (!button || !panel) return;
+    button.style.display = available ? 'inline-flex' : 'none';
+    if (!available && panel.style.display !== 'none') closeInferenceLogs();
+}
+
+async function refreshInferenceLogsAvailability() {
+    if (inferenceAvailabilityRequestPending || !document.getElementById('inference-logs-availability')) return;
+    inferenceAvailabilityRequestPending = true;
+    try {
+        const response = await fetch('/api/jobs/' + inferenceLogsJob + '/inference-logs/availability', {cache: 'no-store'});
+        const result = response.ok ? await response.json() : {available: false};
+        setInferenceLogsAvailable(Boolean(result.available));
+    } catch (err) {
+        setInferenceLogsAvailable(false);
+    } finally {
+        inferenceAvailabilityRequestPending = false;
+    }
+}
+
+async function refreshInferenceLogs() {
+    if (inferenceLogsRequestPending) return;
+    const output = document.getElementById('inference-logs-output');
+    const pod = document.getElementById('inference-logs-pod');
+    const message = document.getElementById('inference-logs-message');
+    if (!output || !pod || !message) return;
+    inferenceLogsRequestPending = true;
+    try {
+        const response = await fetch('/api/jobs/' + inferenceLogsJob + '/inference-logs', {cache: 'no-store'});
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || 'Unable to fetch inference-server logs');
+        const wasAtBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 24;
+        pod.textContent = result.pod ? '- ' + result.pod + ' (' + (result.phase || 'Unknown') + ')' : '';
+        output.textContent = result.logs || result.message || 'No inference-server logs yet.';
+        message.textContent = result.message || '';
+        if (wasAtBottom) output.scrollTop = output.scrollHeight;
+    } catch (err) {
+        output.textContent = 'Inference-server logs are temporarily unavailable.';
+        message.textContent = err.message || 'Try again shortly.';
+    } finally {
+        inferenceLogsRequestPending = false;
+    }
+}
+
+function toggleInferenceLogs() {
+    const panel = document.getElementById('inference-logs-panel');
+    if (!panel) return;
+    panel.style.display = 'block';
+    refreshInferenceLogs();
+    if (!inferenceLogsInterval) inferenceLogsInterval = setInterval(refreshInferenceLogs, 3000);
+}
+
+function closeInferenceLogs() {
+    const panel = document.getElementById('inference-logs-panel');
+    if (panel) panel.style.display = 'none';
+    if (inferenceLogsInterval) {
+        clearInterval(inferenceLogsInterval);
+        inferenceLogsInterval = null;
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
+    refreshInferenceLogsAvailability();
+    if (document.getElementById('inference-logs-availability')) {
+        setInterval(refreshInferenceLogsAvailability, 5000);
+    }
     if (jobPhase === 'Failed') {
         const rows = document.querySelectorAll('.pods-table tbody tr');
         for (const row of rows) {

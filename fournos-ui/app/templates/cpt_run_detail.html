@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}{{ run_view.run.pipeline_key }} - CPT Jobs{% endblock %}
+
+{% block content %}
+<div class="detail-header cpt-detail-header">
+    <a href="/cpt-jobs?project={{ run_view.run.project | urlencode }}" class="back-link">&larr; CPT Jobs</a>
+    <div>
+        <h2>{{ run_view.run.pipeline_key }}</h2>
+        <span class="text-muted">Version: {{ run_view.run.version_label or "Unspecified" }}</span>
+    </div>
+</div>
+
+<div class="card cpt-run-metadata">
+    <div class="card-header">Run details</div>
+    <div class="card-body">
+        <dl>
+            <dt>Project</dt><dd>{{ run_view.run.project }}</dd>
+            <dt>CPT pipeline</dt><dd>{{ run_view.run.pipeline_key }}</dd>
+            <dt>Benchmark version</dt><dd>{{ run_view.run.version_label or "Unspecified" }}</dd>
+            <dt>Forge source</dt><dd><code>{{ run_view.run.forge_source or "Unknown" }}</code></dd>
+            <dt>Forge execution pipeline</dt><dd>{{ run_view.run.forge_pipeline or "-" }}</dd>
+            <dt>Engine image version</dt><dd>{{ run_view.run.engine_version or "-" }}</dd>
+            <dt>Cluster</dt><dd>{{ run_view.run.cluster or "-" }}</dd>
+            <dt>Accelerator / engine</dt><dd>{{ run_view.run.accelerator or "-" }} / {{ run_view.run.engine or "-" }}</dd>
+            <dt>Owner</dt><dd>{{ run_view.run.owner or "-" }}</dd>
+            <dt>Run ID</dt><dd><code>{{ run_view.run.id }}</code></dd>
+            <dt>Started</dt><dd>{{ run_view.run.created_at.strftime("%Y-%m-%d %H:%M UTC") if run_view.run.created_at else "-" }}</dd>
+        </dl>
+    </div>
+</div>
+
+<div id="cpt-run-matrix"
+     hx-get="/api/cpt-jobs/{{ run_view.run.id }}/matrix"
+     hx-trigger="every 10s"
+     hx-swap="innerHTML">
+    {% include "components/cpt_run_matrix.html" %}
+</div>
+{% endblock %}

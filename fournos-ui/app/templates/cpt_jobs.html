@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block title %}CPT Jobs - Fournos{% endblock %}
+
+{% block content %}
+<div class="cpt-page-heading">
+    <div>
+        <h1>CPT Jobs</h1>
+        <p class="text-muted">Track only jobs launched from a CPT pipeline submission.</p>
+    </div>
+</div>
+
+<form class="filter-bar cpt-project-filter" method="get" action="/cpt-jobs">
+    <label for="cpt-project-select">Project</label>
+    <select id="cpt-project-select" name="project" onchange="this.form.submit()">
+        <option value="">All projects</option>
+        {% for item in projects %}
+        <option value="{{ item }}" {% if project == item %}selected{% endif %}>{{ item }}</option>
+        {% endfor %}
+    </select>
+</form>
+
+<div id="cpt-runs-table"
+     hx-get="/api/cpt-jobs/table?project={{ project | urlencode }}"
+     hx-trigger="every 10s"
+     hx-swap="innerHTML">
+    {% include "components/cpt_runs_table_body.html" %}
+</div>
+{% endblock %}

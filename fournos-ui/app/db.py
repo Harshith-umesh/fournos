@@ -12,6 +12,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Integer,
     String,
     Text,
     func,
@@ -60,6 +61,48 @@ class Job(Base):
     trigger_type = Column(String, default="manual")
 
     events = relationship("JobEvent", back_populates="job", cascade="all, delete-orphan")
+
+
+class CptRun(Base):
+    """One dashboard submission through a project's CPT pipeline."""
+
+    __tablename__ = "cpt_runs"
+
+    id = Column(String, primary_key=True)
+    project = Column(String, nullable=False, index=True)
+    pipeline_key = Column(String, nullable=False, index=True)
+    forge_pipeline = Column(String, default="")
+    version_label = Column(String, default="", index=True)
+    forge_source = Column(String, default="")
+    owner = Column(String, default="", index=True)
+    cluster = Column(String, default="", index=True)
+    accelerator = Column(String, default="")
+    engine = Column(String, default="")
+    engine_version = Column(String, default="")
+    run_metadata = Column(JSONB, default=dict)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    jobs = relationship("CptRunJob", back_populates="run", cascade="all, delete-orphan")
+
+
+class CptRunJob(Base):
+    """A child FournosJob created as part of a CPT dashboard submission."""
+
+    __tablename__ = "cpt_run_jobs"
+
+    id = Column(String, primary_key=True)
+    run_id = Column(String, ForeignKey("cpt_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    position = Column(Integer, nullable=False, default=0)
+    job_name = Column(String, nullable=True, unique=True)
+    model_name = Column(String, default="")
+    model_preset = Column(String, default="")
+    workloads = Column(JSONB, default=list)
+    submission_status = Column(String, default="Submitting")
+    status = Column(String, default="Pending", index=True)
+    message = Column(Text, default="")
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    run = relationship("CptRun", back_populates="jobs")
 
 
 class JobEvent(Base):
@@ -124,6 +167,80 @@ async def add_job_event(
 async def get_job_by_name(session: AsyncSession, name: str) -> Job | None:
     result = await session.execute(select(Job).where(Job.name == name))
     return result.scalar_one_or_none()
+
+
+async def create_cpt_run(session: AsyncSession, **kwargs: Any) -> CptRun:
+    run = CptRun(**kwargs)
+    session.add(run)
+    await session.flush()
+    return run
+
+
+async def upsert_cpt_run_job(session: AsyncSession, **kwargs: Any) -> CptRunJob:
+    """Insert or refresh one CPT child-job record, keyed by its stable ID."""
+    if "id" not in kwargs:
+        kwargs["id"] = str(uuid4())
+
+    update_cols = {key: value for key, value in kwargs.items() if key != "id"}
+    stmt = (
+        pg_insert(CptRunJob)
+        .values(**kwargs)
+        .on_conflict_do_update(index_elements=["id"], set_=update_cols)
+        .returning(CptRunJob)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one()
+
+
+async def list_cpt_run_projects(session: AsyncSession) -> list[str]:
+    result = await session.execute(
+        select(CptRun.project).distinct().order_by(CptRun.project)
+    )
+    return list(result.scalars().all())
+
+
+async def list_cpt_runs(
+    session: AsyncSession, *, project: str | None = None, limit: int = 100,
+) -> Sequence[CptRun]:
+    stmt = select(CptRun)
+    if project:
+        stmt = stmt.where(CptRun.project == project)
+    stmt = stmt.order_by(CptRun.created_at.desc()).limit(limit)
+    result = await session.execute(stmt)
+    return result.scalars().all()
+
+
+async def list_cpt_runs_with_jobs(
+    session: AsyncSession, *, project: str | None = None, limit: int = 100,
+) -> tuple[Sequence[CptRun], dict[str, Sequence[CptRunJob]]]:
+    runs = await list_cpt_runs(session, project=project, limit=limit)
+    if not runs:
+        return runs, {}
+
+    run_ids = [run.id for run in runs]
+    result = await session.execute(
+        select(CptRunJob)
+        .where(CptRunJob.run_id.in_(run_ids))
+        .order_by(CptRunJob.position, CptRunJob.created_at)
+    )
+    jobs_by_run: dict[str, list[CptRunJob]] = {run_id: [] for run_id in run_ids}
+    for job in result.scalars().all():
+        jobs_by_run[job.run_id].append(job)
+    return runs, jobs_by_run
+
+
+async def get_cpt_run(session: AsyncSession, run_id: str) -> CptRun | None:
+    result = await session.execute(select(CptRun).where(CptRun.id == run_id))
+    return result.scalar_one_or_none()
+
+
+async def list_cpt_run_jobs(session: AsyncSession, run_id: str) -> Sequence[CptRunJob]:
+    result = await session.execute(
+        select(CptRunJob)
+        .where(CptRunJob.run_id == run_id)
+        .order_by(CptRunJob.position, CptRunJob.created_at)
+    )
+    return result.scalars().all()
 
 
 async def list_jobs(
