@@ -141,7 +141,8 @@ This creates:
 - PostgreSQL StatefulSet with persistent storage
 - Dashboard Deployment with OAuth proxy sidecar (2 containers)
 - Service, ServiceAccount (with OAuth redirect annotation)
-- ClusterRole for FournosJob/CronJob/Pod access
+- ClusterRole for FournosJob status, PipelineRun, Pod, Kueue workload, CronJob,
+  Job, and ConfigMap access in the configured Fournos namespace
 - RoleBinding in the target namespace
 - OpenShift Route with reencrypt TLS
 - Let's Encrypt Certificate (auto-issued and auto-renewed by cert-manager)
@@ -219,6 +220,7 @@ Authentication is handled by the **OpenShift OAuth proxy** sidecar container. Th
 - **TLS:** The Route uses a Let's Encrypt certificate (auto-renewed by cert-manager). Traffic between the Route and the pod is re-encrypted using a service-ca cert.
 - **Local dev bypass:** When developing locally or using `oc port-forward` to port 8000, the OAuth proxy is bypassed entirely (traffic goes directly to FastAPI).
 - **Target-cluster logs:** The optional `kustomize/target-cluster-secret-access/` Role grants the dashboard service account `get` access to Secrets in `psap-secrets` so it can read target-cluster kubeconfigs. Kubernetes RBAC cannot scope this dynamically by Secret name prefix; keep that namespace limited to cluster credentials. Kubeconfigs are used only by the backend and are never returned to the browser.
+- **Application RBAC:** The base dashboard RoleBinding grants the service account the namespaced permissions required to submit and monitor FournosJobs, read PipelineRuns and pod logs, observe Kueue workloads/local queues, and manage dashboard-owned schedules. Cluster-specific bindings—such as access to Hearth resources or cluster-scoped Kueue viewer resources—belong in the cluster bootstrap/deployment configuration and are not embedded in this reusable dashboard bundle.
 
 
 
