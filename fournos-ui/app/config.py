@@ -6,6 +6,9 @@ import os
 from dataclasses import dataclass, field
 
 
+DEFAULT_FJOB_TTL = "12h"
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str = field(

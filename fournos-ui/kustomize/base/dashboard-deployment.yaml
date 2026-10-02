@@ -86,6 +86,10 @@ spec:
               value: INFO
             - name: TARGET_CLUSTER_SECRETS_NAMESPACE
               value: psap-secrets
+            # The Kubernetes client writes kubeconfig certificates to temp files.
+            # /tmp is read-only because readOnlyRootFilesystem is enabled.
+            - name: TMPDIR
+              value: /dev/shm
           volumeMounts:
             - name: projects-config
               mountPath: /etc/fournos-dashboard

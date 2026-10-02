@@ -4,11 +4,8 @@ metadata:
   name: fournos-dashboard
   labels:
     app.kubernetes.io/name: fournos-dashboard
-  annotations:
-    cert-manager.io/issuer-kind: ClusterIssuer
-    cert-manager.io/issuer-name: letsencrypt-production
 spec:
-  host: fournos-dashboard.apps.CLUSTER_DOMAIN
+  host: fournos-dashboard.apps.ocp4.intlab.redhat.com
   to:
     kind: Service
     name: fournos-dashboard

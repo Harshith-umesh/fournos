@@ -12,7 +12,7 @@ import yaml
 from kubernetes import client, config, watch
 from kubernetes.client.rest import ApiException
 
-from app.config import settings
+from app.config import DEFAULT_FJOB_TTL, settings
 
 logger = logging.getLogger(__name__)
 
@@ -564,6 +564,7 @@ def create_cronjob(
             "displayName": f"{project} {preset}".strip(),
             "owner": owner or "fournos-dashboard/scheduler",
             "pipeline": pipeline,
+            "ttl": DEFAULT_FJOB_TTL,
             "exclusive": True,
             "executionEngine": {
                 "forge": {

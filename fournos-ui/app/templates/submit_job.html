@@ -939,6 +939,7 @@ benchmarks.guidellm.fs_group: 0</pre>
 <script>
 const VERSION_PROJECTS = ['mcp_gateway'];
 const EDIT_DRAFT = {{ edit_draft | tojson }};
+const DEFAULT_FJOB_TTL = "{{ default_fjob_ttl }}";
 let rhaiisEditExtraArgs = [];
 
 function parseYamlValue(s) {
@@ -1944,6 +1945,7 @@ function buildJobYaml() {
     yaml += '  exclusive: ' + exclusive + '\n';
     yaml += '  cluster: ' + cluster + '\n';
     yaml += '  priority: ' + priority + '\n';
+    yaml += '  ttl: ' + DEFAULT_FJOB_TTL + '\n';
     if (gpuType) {
         yaml += '  hardware:\n';
         yaml += '    gpuType: ' + gpuType + '\n';
@@ -2780,6 +2782,7 @@ function buildCptExampleYaml() {
     yaml += '  exclusive: false\n';
     yaml += '  cluster: ' + cluster + '\n';
     yaml += '  priority: ' + priority + '\n';
+    yaml += '  ttl: ' + DEFAULT_FJOB_TTL + '\n';
     yaml += '  hardware:\n';
     const cptClusterEntry = (rhaiisConfig && rhaiisConfig.clusters || []).find(function(item) {
         return item.key === cluster;

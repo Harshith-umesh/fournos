@@ -27,6 +27,16 @@
     </span>
 </div>
 
+<div class="job-detail-actions" aria-label="Job actions">
+    <a class="btn btn-secondary" href="/jobs/{{ job.metadata.name | urlencode }}/edit">
+        <span aria-hidden="true">&#9998;</span> Edit &amp; Submit
+    </a>
+    <button class="btn btn-primary" type="button" data-job-name="{{ job.metadata.name }}"
+            onclick="rerunJobFromDetail(this)">
+        Run Again
+    </button>
+</div>
+
 {# Status banner for completed jobs #}
 <div id="job-status-banner">
 {% if is_history and phase in ('Succeeded', 'Failed', 'Stopped') %}
@@ -60,6 +70,34 @@
 {% endif %}
 </div>
 
+{% if not is_history and info.project == 'rhaiis' %}
+<div id="inference-logs-availability" class="inference-logs-callout" style="display:none;">
+    <div>
+        <div class="inference-logs-callout-title">
+            <span class="inference-logs-live-indicator" aria-hidden="true"></span>
+            Live inference server logs
+        </div>
+        <p>Watch the inference pod while this RHAIIS test runs.</p>
+    </div>
+    <button id="open-inference-logs" class="btn btn-primary inference-logs-action" type="button"
+            aria-controls="inference-logs-panel" aria-expanded="false" onclick="toggleInferenceLogs()">
+        View inference pod logs
+    </button>
+</div>
+<div id="inference-logs-panel" class="card" style="display:none; margin-bottom:20px;">
+    <div class="card-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <span>Inference pod logs <span style="font-weight:400;font-size:12px;color:var(--text-muted);">(latest 300 lines, refreshes while open)</span>
+            <span id="inference-logs-pod" style="font-weight:400;font-size:12px;color:var(--text-muted);"></span>
+        </span>
+        <button class="btn btn-sm" type="button" onclick="closeInferenceLogs()">Close</button>
+    </div>
+    <div class="card-body">
+        <pre id="inference-logs-output" role="log" aria-live="polite" style="margin:0;max-height:480px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 var(--font-mono);">Open the viewer while the RHAIIS test is running.</pre>
+        <div id="inference-logs-message" class="text-muted" style="margin-top:8px;font-size:12px;"></div>
+    </div>
+</div>
+{% endif %}
+
 <style>
 .ptl-wrap{background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;padding:20px 24px;margin-bottom:24px;box-shadow:var(--shadow-sm)}
 .ptl-title{font-size:15px;font-weight:600;color:var(--text-primary);text-transform:none;letter-spacing:0;margin-bottom:16px}
@@ -92,23 +130,6 @@
      hx-swap="innerHTML">
     {% include "components/job_detail_dynamic.html" %}
 </div>
-{% if info.project == 'rhaiis' %}
-<div id="inference-logs-availability" style="margin: -8px 0 20px;">
-    <button id="open-inference-logs" class="btn btn-sm" type="button" onclick="toggleInferenceLogs()" style="display:none;">View Inference Server Logs</button>
-</div>
-<div id="inference-logs-panel" class="card" style="display:none; margin-bottom:20px;">
-    <div class="card-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
-        <span>Inference Server Logs <span style="font-weight:400;font-size:12px;color:var(--text-muted);">(latest 300 lines, refreshes while open)</span>
-            <span id="inference-logs-pod" style="font-weight:400;font-size:12px;color:var(--text-muted);"></span>
-        </span>
-        <button class="btn btn-sm" type="button" onclick="closeInferenceLogs()">Close</button>
-    </div>
-    <div class="card-body">
-        <pre id="inference-logs-output" role="log" aria-live="polite" style="margin:0;max-height:480px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 var(--font-mono);">Open the viewer while the RHAIIS test is running.</pre>
-        <div id="inference-logs-message" class="text-muted" style="margin-top:8px;font-size:12px;"></div>
-    </div>
-</div>
-{% endif %}
 {% else %}
 {% include "components/job_detail_dynamic.html" %}
 {% endif %}
@@ -191,6 +212,26 @@ function cancelJob(jobName) {
         .catch(err => { alert('Failed to cancel: ' + err); });
 }
 
+async function rerunJobFromDetail(button) {
+    const jobName = button.dataset.jobName;
+    if (!jobName) return;
+    const originalLabel = button.textContent.trim();
+    button.disabled = true;
+    button.textContent = 'Submitting…';
+    try {
+        const response = await fetch('/api/jobs/' + encodeURIComponent(jobName) + '/rerun', {method: 'POST'});
+        const data = await response.json();
+        if (!response.ok || data.status !== 'ok') {
+            throw new Error(data.detail || 'The job could not be submitted.');
+        }
+        window.location.href = data.redirect || ('/jobs/' + encodeURIComponent(data.job_name));
+    } catch (err) {
+        button.disabled = false;
+        button.textContent = originalLabel;
+        alert('Could not run again: ' + err.message);
+    }
+}
+
 function createLogLine(line, isIssue) {
     const span = document.createElement('span');
     span.className = 'log-line';
@@ -260,10 +301,10 @@ function loadLogs(podName, source) {
 }
 
 function setInferenceLogsAvailable(available) {
-    const button = document.getElementById('open-inference-logs');
+    const callout = document.getElementById('inference-logs-availability');
     const panel = document.getElementById('inference-logs-panel');
-    if (!button || !panel) return;
-    button.style.display = available ? 'inline-flex' : 'none';
+    if (!callout || !panel) return;
+    callout.style.display = available ? 'flex' : 'none';
     if (!available && panel.style.display !== 'none') closeInferenceLogs();
 }
 
@@ -309,6 +350,7 @@ function toggleInferenceLogs() {
     const panel = document.getElementById('inference-logs-panel');
     if (!panel) return;
     panel.style.display = 'block';
+    document.getElementById('open-inference-logs').setAttribute('aria-expanded', 'true');
     refreshInferenceLogs();
     if (!inferenceLogsInterval) inferenceLogsInterval = setInterval(refreshInferenceLogs, 3000);
 }
@@ -316,6 +358,8 @@ function toggleInferenceLogs() {
 function closeInferenceLogs() {
     const panel = document.getElementById('inference-logs-panel');
     if (panel) panel.style.display = 'none';
+    const button = document.getElementById('open-inference-logs');
+    if (button) button.setAttribute('aria-expanded', 'false');
     if (inferenceLogsInterval) {
         clearInterval(inferenceLogsInterval);
         inferenceLogsInterval = null;

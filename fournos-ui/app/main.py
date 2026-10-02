@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
 from app import db, inference_logs, k8s_client, watcher
-from app.config import settings
+from app.config import DEFAULT_FJOB_TTL, settings
 from app.forge_discovery import discover_projects, get_project_presets
 
 logger = logging.getLogger(__name__)
@@ -216,6 +216,7 @@ _jinja_env.globals.update(
     extract_mlflow_url=_extract_mlflow_url,
     cpt_status_class=lambda status: _cpt_status_class(status),
     to_fjob_yaml=_to_fjob_yaml,
+    default_fjob_ttl=DEFAULT_FJOB_TTL,
     url_for=lambda name, **kw: app.url_path_for(name, **kw),
     cache_bust=_CACHE_BUST,
 )
@@ -561,6 +562,7 @@ async def rerun_job(job_name: str):
     project = forge.get("project", "unknown")
 
     spec.pop("shutdown", None)
+    spec["ttl"] = DEFAULT_FJOB_TTL
 
     new_name = sanitize_job_name(f"forge-{project}")
     body = {
@@ -1715,6 +1717,7 @@ async def submit_job(
         spec = _merge_edit_source_spec(edit_source_job, spec, project, env)
     elif env:
         spec["env"] = env
+    spec["ttl"] = DEFAULT_FJOB_TTL
 
     body = {
         "apiVersion": f"{settings.fournos_api_group}/{settings.fournos_api_version}",
@@ -1978,6 +1981,7 @@ async def submit_cpt(request: Request):
             "displayName": display_name,
             "owner": owner,
             "pipeline": pipeline,
+            "ttl": DEFAULT_FJOB_TTL,
             "exclusive": False,
             "priority": priority,
             "hardware": {"gpuType": gpu_type, "gpuCount": gpu_count},

@@ -299,9 +299,68 @@ main { padding: 24px 0; }
     font-weight: 700;
 }
 
+.job-detail-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin: -8px 0 20px;
+    flex-wrap: wrap;
+}
+
 .back-link {
     font-size: 14px;
     color: var(--text-secondary);
+}
+
+.inference-logs-callout {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 18px 20px;
+    margin-bottom: 20px;
+    background: rgba(9, 105, 218, 0.06);
+    border: 1px solid rgba(9, 105, 218, 0.28);
+    border-left: 4px solid var(--accent-blue);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+}
+
+.inference-logs-callout-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.inference-logs-live-indicator {
+    width: 9px;
+    height: 9px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--accent-green);
+    box-shadow: 0 0 0 4px rgba(26, 127, 55, 0.12);
+}
+
+.inference-logs-callout p {
+    margin-top: 4px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.inference-logs-action {
+    flex-shrink: 0;
+    min-height: 44px;
+    padding: 11px 18px;
+    font-size: 15px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+    .inference-logs-callout { flex-direction: column; align-items: stretch; }
+    .inference-logs-action { justify-content: center; white-space: normal; }
 }
 
 .detail-grid {
@@ -313,6 +372,10 @@ main { padding: 24px 0; }
 
 @media (max-width: 900px) {
     .detail-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 700px) {
+    .job-detail-actions { justify-content: flex-start; }
 }
 
 .card {
