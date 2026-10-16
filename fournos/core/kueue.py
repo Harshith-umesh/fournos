@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from decimal import Decimal, InvalidOperation
 
 from kubernetes import client
 
@@ -19,6 +20,7 @@ KUEUE_VERSION = "v1beta2"
 KUEUE_WORKLOAD_PLURAL = "workloads"
 KUEUE_RESOURCE_FLAVOR_PLURAL = "resourceflavors"
 KUEUE_CLUSTER_QUEUE_PLURAL = "clusterqueues"
+GPU_POOL_LABEL_PREFIX = "fournos.dev/gpu-pool-"
 
 
 class KueueClient:
@@ -36,10 +38,14 @@ class KueueClient:
         gpu_type: str | None = None,
         gpu_count: int = 0,
         cluster: str | None = None,
+        gpu_pool: str | None = None,
         exclusive: bool = True,
         priority: str | None = None,
         owner_ref: dict | None = None,
     ) -> dict:
+        if cluster and gpu_pool:
+            raise ValueError("cluster and gpu_pool are mutually exclusive")
+
         resource_requests: dict[str, str] = {}
         if gpu_type and gpu_count:
             gpu_resource = self._gpu_resource_name(gpu_type)
@@ -61,6 +67,14 @@ class KueueClient:
 
         if cluster:
             pod_spec["nodeSelector"] = {"fournos.dev/cluster": cluster}
+        elif gpu_pool:
+            if not gpu_type or not gpu_count:
+                raise ValueError(
+                    "gpu_pool requires a GPU type and a positive GPU count"
+                )
+            pod_spec["nodeSelector"] = {
+                f"{GPU_POOL_LABEL_PREFIX}{gpu_type.lower()}": gpu_pool
+            }
 
         metadata: dict = {
             "name": name,
@@ -154,6 +168,71 @@ class KueueClient:
                     if resource.startswith(prefix):
                         gpu_types.add(resource[len(prefix) :])
         return gpu_types
+
+    def list_gpu_pools(self) -> dict[str, set[str]]:
+        """Return configured GPU pools by type, excluding flavors without quota.
+
+        Pools are encoded as ``fournos.dev/gpu-pool-<gpu-type>`` node labels on
+        ResourceFlavors. Each returned pool must also have positive quota for
+        that GPU type in a ClusterQueue.
+        """
+        queues = self._k8s.list_cluster_custom_object(
+            group=KUEUE_GROUP,
+            version=KUEUE_VERSION,
+            plural=KUEUE_CLUSTER_QUEUE_PLURAL,
+        )
+        flavor_gpu_types: dict[str, set[str]] = {}
+        prefix = settings.gpu_resource_prefix
+
+        for queue in queues.get("items", []):
+            for resource_group in queue.get("spec", {}).get("resourceGroups", []):
+                gpu_resources = {
+                    resource[len(prefix) :]
+                    for resource in resource_group.get("coveredResources", [])
+                    if resource.startswith(prefix)
+                }
+                if not gpu_resources:
+                    continue
+
+                for flavor in resource_group.get("flavors", []):
+                    flavor_name = flavor.get("name")
+                    if not flavor_name:
+                        continue
+                    for resource in flavor.get("resources", []):
+                        resource_name = resource.get("name", "")
+                        if not resource_name.startswith(prefix):
+                            continue
+                        gpu_type = resource_name[len(prefix) :]
+                        if gpu_type not in gpu_resources:
+                            continue
+                        try:
+                            has_quota = (
+                                Decimal(str(resource.get("nominalQuota", 0))) > 0
+                            )
+                        except (InvalidOperation, TypeError, ValueError):
+                            has_quota = False
+                        if has_quota:
+                            flavor_gpu_types.setdefault(flavor_name, set()).add(
+                                gpu_type
+                            )
+
+        resource_flavors = self._k8s.list_cluster_custom_object(
+            group=KUEUE_GROUP,
+            version=KUEUE_VERSION,
+            plural=KUEUE_RESOURCE_FLAVOR_PLURAL,
+        )
+        pools: dict[str, set[str]] = {}
+        for flavor in resource_flavors.get("items", []):
+            flavor_name = flavor.get("metadata", {}).get("name")
+            if not flavor_name:
+                continue
+            labels = flavor.get("spec", {}).get("nodeLabels", {})
+            for gpu_type in flavor_gpu_types.get(flavor_name, set()):
+                pool = labels.get(f"{GPU_POOL_LABEL_PREFIX}{gpu_type}")
+                if isinstance(pool, str) and pool:
+                    pools.setdefault(gpu_type, set()).add(pool)
+
+        return pools
 
     @staticmethod
     def is_admitted(workload: dict) -> bool:

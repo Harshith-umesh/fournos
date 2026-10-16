@@ -171,10 +171,20 @@ def _resolve_hardware(
     hardware = spec.get("hardware") or {}
     gpu_type = hardware.get("gpuType")
     gpu_count = hardware.get("gpuCount", 0)
+    gpu_pool = spec.get("gpuPool")
 
     exclusive_lock = spec["exclusive"] and spec.get("cluster")
 
     if not gpu_type or not gpu_count:
+        if gpu_pool:
+            _resolve_failed(
+                patch,
+                conditions,
+                name,
+                "gpuPool requires hardware.gpuType and a positive hardware.gpuCount",
+                reason="InvalidGPUPool",
+            )
+            return None, None
         if not exclusive_lock:
             # Hardware is optional for non-exclusive jobs (including clusterless)
             logger.info(
@@ -227,6 +237,31 @@ def _resolve_hardware(
         )
         return None, None
 
+    if gpu_pool:
+        try:
+            known_pools = ctx.kueue.list_gpu_pools().get(gpu_type, set())
+        except client.exceptions.ApiException as exc:
+            _resolve_failed(
+                patch,
+                conditions,
+                name,
+                f"Failed to list GPU pools: {exc.reason}",
+                reason="InvalidGPUPool",
+                cond_message=f"Kueue API error: {exc.reason}",
+            )
+            return None, None
+        if gpu_pool not in known_pools:
+            _resolve_failed(
+                patch,
+                conditions,
+                name,
+                f"GPU pool '{gpu_pool}' has no configured '{gpu_type}' quota. "
+                f"Valid pools: {', '.join(sorted(known_pools)) or 'none'}",
+                reason="InvalidGPUPool",
+                cond_message=f"GPU pool '{gpu_pool}' does not provide '{gpu_type}' GPUs",
+            )
+            return None, None
+
     return gpu_type, gpu_count
 
 
@@ -266,6 +301,7 @@ def _create_workload_and_transition(
             gpu_type=gpu_type,
             gpu_count=gpu_count,
             cluster=spec.get("cluster"),
+            gpu_pool=spec.get("gpuPool"),
             exclusive=spec["exclusive"],
             priority=spec.get("priority"),
             owner_ref=owner_ref(body),

@@ -7,6 +7,7 @@ import logging
 import threading
 from collections.abc import Generator
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from kubernetes import client, config, watch
@@ -15,6 +16,10 @@ from kubernetes.client.rest import ApiException
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+GPU_POOL_LABEL_PREFIX = "fournos.dev/gpu-pool-"
+KUEUE_GROUP = "kueue.x-k8s.io"
+KUEUE_VERSION = "v1beta2"
 
 _api_client: client.ApiClient | None = None
 _custom_api: client.CustomObjectsApi | None = None
@@ -58,6 +63,68 @@ def is_connected() -> bool:
     """Return True if a K8s client has been successfully loaded."""
     _ensure_loaded()
     return _custom_api is not None
+
+
+def _gpu_pools_from_kueue(
+    cluster_queues: list[dict], resource_flavors: list[dict]
+) -> list[dict]:
+    """Build dashboard pool choices from labeled flavors with positive GPU quota."""
+    flavor_gpu_types: dict[str, set[str]] = {}
+    for queue in cluster_queues:
+        for resource_group in queue.get("spec", {}).get("resourceGroups", []):
+            covered_resources = set(resource_group.get("coveredResources", []))
+            for flavor in resource_group.get("flavors", []):
+                flavor_name = flavor.get("name")
+                if not flavor_name:
+                    continue
+                for resource in flavor.get("resources", []):
+                    resource_name = resource.get("name", "")
+                    if not resource_name.startswith(settings.gpu_resource_prefix):
+                        continue
+                    if resource_name not in covered_resources:
+                        continue
+                    try:
+                        has_quota = Decimal(str(resource.get("nominalQuota", 0))) > 0
+                    except (InvalidOperation, TypeError, ValueError):
+                        has_quota = False
+                    if has_quota:
+                        gpu_type = resource_name[len(settings.gpu_resource_prefix) :]
+                        flavor_gpu_types.setdefault(flavor_name, set()).add(gpu_type)
+
+    pools: set[tuple[str, str]] = set()
+    for flavor in resource_flavors:
+        flavor_name = flavor.get("metadata", {}).get("name")
+        if not flavor_name:
+            continue
+        node_labels = flavor.get("spec", {}).get("nodeLabels", {})
+        for gpu_type in flavor_gpu_types.get(flavor_name, set()):
+            pool_name = node_labels.get(f"{GPU_POOL_LABEL_PREFIX}{gpu_type}")
+            if isinstance(pool_name, str) and pool_name:
+                pools.add((gpu_type, pool_name))
+
+    return [{"gpu_type": gpu_type, "name": name} for gpu_type, name in sorted(pools)]
+
+
+def list_gpu_pools() -> list[dict]:
+    """List configured GPU pools visible to the dashboard service account."""
+    _ensure_loaded()
+    if _custom_api is None:
+        return []
+    try:
+        queues = _custom_api.list_cluster_custom_object(
+            group=KUEUE_GROUP,
+            version=KUEUE_VERSION,
+            plural="clusterqueues",
+        )
+        flavors = _custom_api.list_cluster_custom_object(
+            group=KUEUE_GROUP,
+            version=KUEUE_VERSION,
+            plural="resourceflavors",
+        )
+    except ApiException as exc:
+        logger.error("Failed to list GPU pools: %s", exc.reason)
+        return []
+    return _gpu_pools_from_kueue(queues.get("items", []), flavors.get("items", []))
 
 
 # ---------------------------------------------------------------------------
@@ -498,6 +565,7 @@ def create_cronjob(
     resolver_script: str = "",
     resolver_image: str = "",
     resolver_filename: str = "",
+    gpu_pool: str = "",
     namespace: str | None = None,
 ) -> dict:
     """Create a K8s CronJob that submits a FournosJob on schedule.
@@ -513,6 +581,8 @@ def create_cronjob(
     _ensure_loaded()
     if _batch_api is None:
         raise RuntimeError("Kubernetes client not available")
+    if bool(cluster) == bool(gpu_pool):
+        raise ValueError("Specify exactly one of cluster or gpu_pool")
     ns = namespace or settings.fournos_namespace
 
     fjob_spec = {
@@ -527,7 +597,6 @@ def create_cronjob(
             },
         },
         "spec": {
-            "cluster": cluster,
             "displayName": f"{project} {preset}".strip(),
             "owner": owner or "fournos-dashboard/scheduler",
             "pipeline": pipeline,
@@ -541,6 +610,10 @@ def create_cronjob(
             },
         },
     }
+    if cluster:
+        fjob_spec["spec"]["cluster"] = cluster
+    if gpu_pool:
+        fjob_spec["spec"]["gpuPool"] = gpu_pool
     fjob_json = json.dumps(fjob_spec)
     api_path = (
         f"/apis/{settings.fournos_api_group}/{settings.fournos_api_version}"
@@ -653,6 +726,7 @@ def create_cronjob(
     annotations = {
         "fournos-launcher/project": project,
         "fournos-launcher/cluster": cluster,
+        "fournos-launcher/gpu-pool": gpu_pool,
         "fournos-launcher/pipeline": pipeline,
         "fournos-launcher/preset": preset,
         "fournos-launcher/owner": owner,
@@ -852,6 +926,7 @@ def _cronjob_to_dict(cj: Any) -> dict:
         "suspend": cj.spec.suspend or False,
         "project": annotations.get("fournos-launcher/project", ""),
         "cluster": annotations.get("fournos-launcher/cluster", ""),
+        "gpu_pool": annotations.get("fournos-launcher/gpu-pool", ""),
         "pipeline": annotations.get("fournos-launcher/pipeline", ""),
         "preset": annotations.get("fournos-launcher/preset", ""),
         "owner": annotations.get("fournos-launcher/owner", ""),
