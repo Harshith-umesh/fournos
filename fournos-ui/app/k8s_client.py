@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 GPU_POOL_LABEL_PREFIX = "fournos.dev/gpu-pool-"
 KUEUE_GROUP = "kueue.x-k8s.io"
 KUEUE_VERSION = "v1beta2"
+CLUSTER_SLOT_RESOURCE = "fournos/cluster-slot"
 
 _api_client: client.ApiClient | None = None
 _custom_api: client.CustomObjectsApi | None = None
@@ -65,31 +66,42 @@ def is_connected() -> bool:
     return _custom_api is not None
 
 
+def _positive_quota(value: object) -> bool:
+    try:
+        return Decimal(str(value)) > 0
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+
+
 def _gpu_pools_from_kueue(
-    cluster_queues: list[dict], resource_flavors: list[dict]
+    cluster_queue: dict, resource_flavors: list[dict]
 ) -> list[dict]:
-    """Build dashboard pool choices from labeled flavors with positive GPU quota."""
+    """Build choices from pool flavors with GPU and slot quota in one group."""
     flavor_gpu_types: dict[str, set[str]] = {}
-    for queue in cluster_queues:
-        for resource_group in queue.get("spec", {}).get("resourceGroups", []):
-            covered_resources = set(resource_group.get("coveredResources", []))
-            for flavor in resource_group.get("flavors", []):
-                flavor_name = flavor.get("name")
-                if not flavor_name:
+    for resource_group in cluster_queue.get("spec", {}).get("resourceGroups", []):
+        covered_resources = set(resource_group.get("coveredResources", []))
+        if CLUSTER_SLOT_RESOURCE not in covered_resources:
+            continue
+        for flavor in resource_group.get("flavors", []):
+            flavor_name = flavor.get("name")
+            if not flavor_name:
+                continue
+            quotas = {
+                resource.get("name"): resource.get("nominalQuota", 0)
+                for resource in flavor.get("resources", [])
+            }
+            if not _positive_quota(quotas.get(CLUSTER_SLOT_RESOURCE)):
+                continue
+            for resource_name, quota in quotas.items():
+                if not resource_name or not resource_name.startswith(
+                    settings.gpu_resource_prefix
+                ):
                     continue
-                for resource in flavor.get("resources", []):
-                    resource_name = resource.get("name", "")
-                    if not resource_name.startswith(settings.gpu_resource_prefix):
-                        continue
-                    if resource_name not in covered_resources:
-                        continue
-                    try:
-                        has_quota = Decimal(str(resource.get("nominalQuota", 0))) > 0
-                    except (InvalidOperation, TypeError, ValueError):
-                        has_quota = False
-                    if has_quota:
-                        gpu_type = resource_name[len(settings.gpu_resource_prefix) :]
-                        flavor_gpu_types.setdefault(flavor_name, set()).add(gpu_type)
+                if resource_name not in covered_resources:
+                    continue
+                if _positive_quota(quota):
+                    gpu_type = resource_name[len(settings.gpu_resource_prefix) :]
+                    flavor_gpu_types.setdefault(flavor_name, set()).add(gpu_type)
 
     pools: set[tuple[str, str]] = set()
     for flavor in resource_flavors:
@@ -106,25 +118,38 @@ def _gpu_pools_from_kueue(
 
 
 def list_gpu_pools() -> list[dict]:
-    """List configured GPU pools visible to the dashboard service account."""
+    """List GPU pools available through this dashboard namespace's LocalQueue."""
     _ensure_loaded()
     if _custom_api is None:
         return []
     try:
-        queues = _custom_api.list_cluster_custom_object(
+        local_queue = _custom_api.get_namespaced_custom_object(
+            group=KUEUE_GROUP,
+            version=KUEUE_VERSION,
+            namespace=settings.fournos_namespace,
+            plural="localqueues",
+            name=settings.kueue_local_queue_name,
+        )
+        cluster_queue_name = local_queue.get("spec", {}).get("clusterQueue")
+        if not cluster_queue_name:
+            raise ValueError(
+                f"LocalQueue '{settings.kueue_local_queue_name}' has no ClusterQueue"
+            )
+        queue = _custom_api.get_cluster_custom_object(
             group=KUEUE_GROUP,
             version=KUEUE_VERSION,
             plural="clusterqueues",
+            name=cluster_queue_name,
         )
         flavors = _custom_api.list_cluster_custom_object(
             group=KUEUE_GROUP,
             version=KUEUE_VERSION,
             plural="resourceflavors",
         )
-    except ApiException as exc:
-        logger.error("Failed to list GPU pools: %s", exc.reason)
-        return []
-    return _gpu_pools_from_kueue(queues.get("items", []), flavors.get("items", []))
+    except (ApiException, ValueError):
+        logger.exception("Failed to list GPU pools")
+        raise
+    return _gpu_pools_from_kueue(queue, flavors.get("items", []))
 
 
 # ---------------------------------------------------------------------------

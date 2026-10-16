@@ -350,6 +350,9 @@ resource group, with a separate flavor and quota for each target cluster. This
 lets Kueue select one flavor for a Workload: if two H200 clusters each have 4
 GPUs free, an 8-GPU request remains pending rather than combining them. It can
 be admitted once one cluster has enough available quota.
+Pool discovery checks only the ClusterQueue referenced by the job namespace's
+configured LocalQueue (default `fournos-queue`) and requires positive GPU and
+cluster-slot quota in that same resource group.
 
 For example, an 8-GPU job that can run on either H200 cluster can use:
 

@@ -240,14 +240,15 @@ def _resolve_hardware(
     if gpu_pool:
         try:
             known_pools = ctx.kueue.list_gpu_pools().get(gpu_type, set())
-        except client.exceptions.ApiException as exc:
+        except (client.exceptions.ApiException, ValueError) as exc:
+            error = getattr(exc, "reason", str(exc))
             _resolve_failed(
                 patch,
                 conditions,
                 name,
-                f"Failed to list GPU pools: {exc.reason}",
+                f"Failed to list GPU pools: {error}",
                 reason="InvalidGPUPool",
-                cond_message=f"Kueue API error: {exc.reason}",
+                cond_message=f"GPU pool lookup failed: {error}",
             )
             return None, None
         if gpu_pool not in known_pools:

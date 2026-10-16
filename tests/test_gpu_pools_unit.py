@@ -6,6 +6,7 @@ import pytest
 from fournos.core.kueue import KueueClient
 from fournos.handlers.lifecycle import on_create
 from fournos.handlers.resolving import _resolve_hardware
+from fournos.settings import settings
 from fournos.state import ctx
 
 
@@ -15,14 +16,23 @@ def _clean_around_test():
 
 
 class FakeK8sClient:
-    def __init__(self, queues=None, flavors=None):
+    def __init__(self, queues=None, flavors=None, cluster_queue_name="fournos-queue"):
         self.queues = queues or []
         self.flavors = flavors or []
+        self.cluster_queue_name = cluster_queue_name
         self.body = None
 
+    def get_namespaced_custom_object(self, *, plural, **kwargs):
+        assert plural == "localqueues"
+        assert kwargs["namespace"] == settings.workload_namespace
+        assert kwargs["name"] == settings.kueue_local_queue_name
+        return {"spec": {"clusterQueue": self.cluster_queue_name}}
+
+    def get_cluster_custom_object(self, *, plural, name, **kwargs):
+        assert plural == "clusterqueues"
+        return next(queue for queue in self.queues if queue["metadata"]["name"] == name)
+
     def list_cluster_custom_object(self, *, plural, **kwargs):
-        if plural == "clusterqueues":
-            return {"items": self.queues}
         if plural == "resourceflavors":
             return {"items": self.flavors}
         raise AssertionError(f"Unexpected Kueue resource list: {plural}")
@@ -58,6 +68,7 @@ def test_list_gpu_pools_uses_only_flavors_with_positive_gpu_quota() -> None:
     api = FakeK8sClient(
         queues=[
             {
+                "metadata": {"name": "fournos-queue"},
                 "spec": {
                     "resourceGroups": [
                         {
@@ -72,7 +83,7 @@ def test_list_gpu_pools_uses_only_flavors_with_positive_gpu_quota() -> None:
                             ],
                         }
                     ]
-                }
+                },
             }
         ],
         flavors=[
@@ -84,6 +95,92 @@ def test_list_gpu_pools_uses_only_flavors_with_positive_gpu_quota() -> None:
     )
 
     assert KueueClient(api).list_gpu_pools() == {"h200": {"h200-pool"}}
+
+
+def test_pool_in_an_unrelated_cluster_queue_is_not_available() -> None:
+    api = FakeK8sClient(
+        queues=[
+            {
+                "metadata": {"name": "fournos-queue"},
+                "spec": {"resourceGroups": []},
+            },
+            {
+                "metadata": {"name": "other-queue"},
+                "spec": {
+                    "resourceGroups": [
+                        {
+                            "coveredResources": [
+                                "fournos/gpu-h200",
+                                "fournos/cluster-slot",
+                            ],
+                            "flavors": [_queue_flavor("cluster-a", 8)],
+                        }
+                    ]
+                },
+            },
+        ],
+        flavors=[_resource_flavor("cluster-a", "h200-pool")],
+    )
+
+    assert KueueClient(api).list_gpu_pools() == {}
+
+
+def test_pool_lookup_rejects_local_queue_without_cluster_queue() -> None:
+    api = FakeK8sClient(cluster_queue_name="")
+
+    with pytest.raises(ValueError, match="has no ClusterQueue"):
+        KueueClient(api).list_gpu_pools()
+
+
+def test_pool_requires_positive_slot_quota_in_the_gpu_resource_group() -> None:
+    flavor = _queue_flavor("cluster-a", 8)
+    flavor["resources"][1]["nominalQuota"] = 0
+    api = FakeK8sClient(
+        queues=[
+            {
+                "metadata": {"name": "fournos-queue"},
+                "spec": {
+                    "resourceGroups": [
+                        {
+                            "coveredResources": [
+                                "fournos/gpu-h200",
+                                "fournos/cluster-slot",
+                            ],
+                            "flavors": [flavor],
+                        }
+                    ]
+                },
+            }
+        ],
+        flavors=[_resource_flavor("cluster-a", "h200-pool")],
+    )
+
+    assert KueueClient(api).list_gpu_pools() == {}
+
+
+def test_pool_rejects_gpu_and_slot_quotas_in_separate_groups() -> None:
+    api = FakeK8sClient(
+        queues=[
+            {
+                "metadata": {"name": "fournos-queue"},
+                "spec": {
+                    "resourceGroups": [
+                        {
+                            "coveredResources": ["fournos/gpu-h200"],
+                            "flavors": [_queue_flavor("cluster-a", 8)],
+                        },
+                        {
+                            "coveredResources": ["fournos/cluster-slot"],
+                            "flavors": [_queue_flavor("cluster-a", 8)],
+                        },
+                    ]
+                },
+            }
+        ],
+        flavors=[_resource_flavor("cluster-a", "h200-pool")],
+    )
+
+    assert KueueClient(api).list_gpu_pools() == {}
 
 
 def test_gpu_pool_workload_keeps_full_gpu_request_on_one_podset() -> None:

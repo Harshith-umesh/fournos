@@ -54,6 +54,12 @@ class Settings:
         )
     )
 
+    kueue_local_queue_name: str = field(
+        default_factory=lambda: os.environ.get(
+            "FOURNOS_KUEUE_LOCAL_QUEUE_NAME", "fournos-queue"
+        )
+    )
+
     jobs_poll_interval_seconds: int = 5
 
     default_pipelines: tuple[str, ...] = (
