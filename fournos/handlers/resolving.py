@@ -276,9 +276,17 @@ def _fits_free_nodes(spec, name, conditions, patch, gpu_type, gpu_count):
 
     try:
         # A Workload may already exist if a previous tick created it but its
-        # status patch did not persist. The admission decision is taken, so
-        # the gate must not block the 409/idempotent path that follows.
+        # status patch did not persist. Kueue already has the Workload, so
+        # let the 409 recovery path finish and clear any old capacity rejection.
         if ctx.kueue.get_workload_or_none(name) is not None:
+            set_condition(
+                patch,
+                conditions,
+                COND_NODE_CAPACITY,
+                "Unknown",
+                "WorkloadAlreadyExists",
+                "Workload already exists, Kueue decides admission",
+            )
             logger.debug("Job %s: Workload already exists, skipping node check", name)
             return True
         published = ctx.kueue.get_flavor_free_blocks(cluster)
@@ -447,6 +455,7 @@ def reconcile_resolving(spec, name, status, patch, body):
     else:
         if not _fits_free_nodes(spec, name, conditions, patch, gpu_type, gpu_count):
             return
+        conditions = patch.status.get("conditions", conditions)
         _create_workload_and_transition(
             spec, name, conditions, patch, body, gpu_type, gpu_count
         )

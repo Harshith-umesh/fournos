@@ -96,13 +96,12 @@ spec:
                     replicas:
                       type: integer
                       minimum: 0
-                      default: 1
                       description: >-
                         Number of serving replicas. Each replica is one pod
-                        requesting gpusPerReplica GPUs. Fournos uses this to
-                        check that every replica fits on a single node before
-                        admitting the job. Zero replicas places nothing, so the
-                        check always passes.
+                        requesting gpusPerReplica GPUs. The hardware resolver
+                        can fill this in when omitted. If it is still omitted
+                        after resolution, Fournos checks a single replica.
+                        Zero replicas place nothing, so the check passes.
                     gpusPerReplica:
                       type: integer
                       minimum: 1

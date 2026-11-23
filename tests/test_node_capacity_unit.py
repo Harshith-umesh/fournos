@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import yaml
@@ -170,7 +171,10 @@ class TestFitsFreeNodes:
         # The Workload was created on a previous tick; Kueue, not this gate,
         # decides. Otherwise a shrinking cluster could strand the job.
         assert resolving._fits_free_nodes(spec, "job", [], patch, "h200", 8) is True
-        assert "conditions" not in patch.status
+        condition = patch.status["conditions"][0]
+        assert condition["type"] == "NodeCapacity"
+        assert condition["status"] == "Unknown"
+        assert condition["reason"] == "WorkloadAlreadyExists"
 
     def test_skips_when_capacity_is_unknown(self, monkeypatch) -> None:
         patch = _patch(monkeypatch, None)
@@ -248,61 +252,86 @@ class TestFitsFreeNodes:
 
 
 class TestReconcileResolvingGate:
-    def _stub_resolution(self, monkeypatch, blocks):
+    def _stub_resolution(self, monkeypatch, blocks, workload=None):
         monkeypatch.setattr(resolving, "_ensure_resolve_job", lambda *args: {})
         monkeypatch.setattr(resolving, "_check_job_finished", lambda *args: True)
         monkeypatch.setattr(resolving, "_resolve_hardware", lambda *args: ("h200", 8))
         monkeypatch.setattr(resolving, "_validate_secret_refs", lambda *args: True)
-        monkeypatch.setattr(
-            ctx,
-            "kueue",
-            SimpleNamespace(
-                get_flavor_free_blocks=lambda cluster: blocks,
-                get_workload_or_none=lambda name: None,
-            ),
+        patch = _patch(monkeypatch, blocks, workload)
+        ctx.kueue.create_workload = Mock(
+            side_effect=ApiException(status=409) if workload is not None else None
         )
+        return patch
 
     def test_does_not_create_workload_when_replicas_do_not_fit(
         self, monkeypatch
     ) -> None:
-        self._stub_resolution(monkeypatch, {"h200": [4, 4]})
-        created = []
-        monkeypatch.setattr(
-            resolving,
-            "_create_workload_and_transition",
-            lambda *args: created.append(args),
-        )
+        patch = self._stub_resolution(monkeypatch, {"h200": [4, 4]})
         spec = {
             "exclusive": True,
             "cluster": "cluster-1",
             "hardware": {"gpuType": "h200", "gpuCount": 8},
         }
-        patch = SimpleNamespace(status={})
+        body = {"metadata": {"name": "job", "uid": "test-uid"}}
 
-        resolving.reconcile_resolving(spec, "job", {}, patch, {"metadata": {}})
+        resolving.reconcile_resolving(spec, "job", {}, patch, body)
 
-        assert created == []
+        ctx.kueue.create_workload.assert_not_called()
         assert "phase" not in patch.status
         assert patch.status["message"].startswith("Cannot place")
 
-    def test_creates_workload_when_replicas_fit(self, monkeypatch) -> None:
-        self._stub_resolution(monkeypatch, {"h200": [8]})
-        created = []
-        monkeypatch.setattr(
-            resolving,
-            "_create_workload_and_transition",
-            lambda *args: created.append(args),
-        )
+    @pytest.mark.parametrize(
+        ("blocks", "workload", "capacity_status", "reason"),
+        [
+            pytest.param({"h200": [8]}, None, "True", "Fits", id="fits"),
+            pytest.param(None, None, "Unknown", "CapacityUnknown", id="missing"),
+            pytest.param(
+                ApiException(status=500),
+                None,
+                "Unknown",
+                "CapacityLookupFailed",
+                id="api-error",
+            ),
+            pytest.param(
+                {"h200": []},
+                {"metadata": {"name": "job"}},
+                "Unknown",
+                "WorkloadAlreadyExists",
+                id="existing-workload",
+            ),
+        ],
+    )
+    def test_preserves_capacity_condition_when_entering_pending(
+        self, monkeypatch, blocks, workload, capacity_status, reason
+    ) -> None:
+        patch = self._stub_resolution(monkeypatch, blocks, workload)
         spec = {
             "exclusive": True,
             "cluster": "cluster-1",
             "hardware": {"gpuType": "h200", "gpuCount": 8},
         }
-        patch = SimpleNamespace(status={})
+        body = {"metadata": {"name": "job", "uid": "test-uid"}}
+        status = {
+            "conditions": [
+                {
+                    "type": "NodeCapacity",
+                    "status": "False",
+                    "reason": "InsufficientNodeCapacity",
+                }
+            ]
+        }
 
-        resolving.reconcile_resolving(spec, "job", {}, patch, {"metadata": {}})
+        resolving.reconcile_resolving(spec, "job", status, patch, body)
 
-        assert len(created) == 1
+        ctx.kueue.create_workload.assert_called_once()
+        assert patch.status["phase"] == "Pending"
+        conditions = {
+            condition["type"]: condition for condition in patch.status["conditions"]
+        }
+        assert conditions["NodeCapacity"]["status"] == capacity_status
+        assert conditions["NodeCapacity"]["reason"] == reason
+        assert conditions["Resolved"]["status"] == "True"
+        assert conditions["WorkloadAdmitted"]["reason"] == "Pending"
 
 
 def test_crd_schema_keeps_the_replica_shape_fields() -> None:
@@ -322,3 +351,5 @@ def test_crd_schema_keeps_the_replica_shape_fields() -> None:
     # Forge preserves replicas: 0 from rhaiis.deploy.replicas, so the schema
     # must not reject it.
     assert hardware["properties"]["replicas"]["minimum"] == 0
+    # A schema default is indistinguishable from an explicit override in Forge.
+    assert "default" not in hardware["properties"]["replicas"]
